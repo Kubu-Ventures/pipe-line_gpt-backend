@@ -1,0 +1,2 @@
+Generic single-database configuration with async support.
+Run migrations with: alembic -c alembic/alembic.ini upgrade head

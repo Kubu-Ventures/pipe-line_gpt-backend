@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pipelinegpt-backend"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.115",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg",
+    "pgvector",
+    "anthropic>=0.40",
+    "pydantic-settings>=2.0",
+    "celery[redis]",
+    "pdfplumber",
+    "pypdf2",
+    "shapely",
+    "fiona",
+    "httpx",
+    "prometheus-fastapi-instrumentator",
+    "python-jose[cryptography]",
+    "passlib[bcrypt]",
+    "python-multipart",
+    "langdetect",
+    "presidio-analyzer",
+    "presidio-anonymizer",
+    "sentence-transformers",
+    "redis",
+    "alembic",
+    "pytest",
+    "pytest-asyncio",
+    "openai",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "mypy",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
