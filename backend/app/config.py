@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60
+    access_token_expire_minutes: int = 480  # 8 hours — covers a full working day demo
 
     embedding_model: str = "text-embedding-3-small"
     llm_model: str = "claude-sonnet-4-6"
