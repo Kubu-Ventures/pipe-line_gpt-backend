@@ -10,6 +10,7 @@ from pydantic import BaseModel, EmailStr, Field
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    mfa_setup_required: bool = False
 
 
 class LoginRequest(BaseModel):
@@ -17,22 +18,60 @@ class LoginRequest(BaseModel):
     password: str
 
 
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str
-    role: str = "OPERATOR"
-    preferred_lang: str = "en"
-
-
 class UserOut(BaseModel):
     id: uuid.UUID
     email: str
     role: str
+    status: str
     preferred_lang: str
     mfa_enabled: bool
     created_at: datetime
+    last_login: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class AcceptInviteRequest(BaseModel):
+    token: str
+    email: EmailStr
+    password: str = Field(..., min_length=8)
+
+
+class MFASetupResponse(BaseModel):
+    provisioning_uri: str
+    secret: str
+
+
+class MFAVerifyRequest(BaseModel):
+    code: str = Field(..., min_length=6, max_length=6)
+
+
+# ── Admin / Invitations ───────────────────────────────────────────────────────
+
+class InviteRequest(BaseModel):
+    email: EmailStr
+    role: str = Field(..., pattern="^(OPERATOR|ENGINEER|ADMIN)$")
+
+
+class InviteOut(BaseModel):
+    id: uuid.UUID
+    email: str
+    role: str
+    token: str
+    expires_at: datetime
+    accepted_at: datetime | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class UserStatusUpdate(BaseModel):
+    status: str = Field(..., pattern="^(ACTIVE|PENDING|SUSPENDED)$")
+
+
+class UserListResponse(BaseModel):
+    total: int
+    users: list[UserOut]
 
 
 # ── Query ─────────────────────────────────────────────────────────────────────
