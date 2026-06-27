@@ -33,7 +33,6 @@ class UserOut(BaseModel):
 
 class AcceptInviteRequest(BaseModel):
     token: str
-    email: EmailStr
     password: str = Field(..., min_length=8)
 
 
