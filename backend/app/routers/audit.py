@@ -2,18 +2,125 @@ from __future__ import annotations
 
 import csv
 import io
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import select
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.middleware.auth import RequireAdmin, RequireEngineer, get_db, get_current_user
+from app.middleware.auth import RequireEngineer, get_db
 from app.models.db import AuditEvent, User
 from app.models.schemas import AuditEventOut, AuditListResponse
 
 router = APIRouter(prefix="/audit", tags=["audit"])
+
+# Identity / security events — only ADMIN should see these
+ADMIN_ONLY_EVENT_TYPES = {
+    "USER_LOGIN",
+    "USER_INVITED",
+    "USER_INVITED_ACCEPTED",
+    "USER_MFA_ENROLLED",
+    "CONFIG_CHANGE",
+}
+
+# Per-event-type metadata used in the CSV export
+# (category, human label, regulatory reference)
+_EVENT_META: dict[str, tuple[str, str, str]] = {
+    "HITL_APPROVED":         ("Engineer Decision",   "HITL Approval",           "49 CFR §192.911 / ASME B31.8S §6"),
+    "HITL_REJECTED":         ("Engineer Decision",   "HITL Rejection",          "49 CFR §192.911 / ASME B31.8S §6"),
+    "HITL_EDITED":           ("Engineer Decision",   "HITL Edit & Approval",    "49 CFR §192.911 / ASME B31.8S §6"),
+    "ANOMALY_ESCALATED":     ("Integrity Alert",     "Anomaly Escalation",      "ASME B31.8S §4 / 49 CFR §192.933"),
+    "COMPLIANCE_FLAG":       ("Compliance Alert",    "IMP Deadline Flag",       "49 CFR §192.945 / §192.947"),
+    "QUERY_COMPLETED":       ("AI Query",            "Query Answered",          "49 CFR §192.911"),
+    "INGEST_COMPLETED":      ("Document Management", "Document Ingested",       "49 CFR §192.911 (records)"),
+    "USER_LOGIN":            ("Security",            "User Login",              "49 CFR §192.911 (access control)"),
+    "USER_INVITED":          ("Security",            "Invitation Sent",         "49 CFR §192.911 (access control)"),
+    "USER_INVITED_ACCEPTED": ("Security",            "Invitation Accepted",     "49 CFR §192.911 (access control)"),
+    "USER_MFA_ENROLLED":     ("Security",            "MFA Enrolled",            "49 CFR §192.911 (access control)"),
+    "CONFIG_CHANGE":         ("System",              "Configuration Changed",   "49 CFR §192.911"),
+}
+
+
+def _is_valid_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+
+def _derive_csv_row(
+    e: AuditEvent,
+    actor_email: str,
+    category: str,
+    event_label: str,
+    reg_ref: str,
+) -> list[str]:
+    p = e.payload_json or {}
+
+    actor = p.get("email") or actor_email or str(e.actor_id or "system")
+
+    segment = (
+        p.get("segment")
+        or p.get("filename")
+        or p.get("obligation")
+        or "—"
+    )
+
+    conf_raw = p.get("confidence")
+    confidence = f"{round(float(conf_raw) * 100, 1)}%" if conf_raw is not None else "—"
+
+    risk = p.get("risk_level") or "—"
+
+    etype = e.event_type
+    if etype == "HITL_APPROVED":
+        decision = p.get("final_action") or "Approved"
+    elif etype == "HITL_REJECTED":
+        decision = f"Rejected — {p.get('reason', 'no reason recorded')}"
+    elif etype == "HITL_EDITED":
+        decision = p.get("final_action") or "Edited and approved"
+    elif etype == "ANOMALY_ESCALATED":
+        wl = p.get("wall_loss")
+        decision = p.get("action_required") or (f"{wl}% wall loss exceeds {p.get('threshold', 40)}% threshold" if wl else "—")
+    elif etype == "COMPLIANCE_FLAG":
+        decision = f"Due {p.get('due_date', '—')} — {p.get('days_remaining', '—')} days remaining"
+    elif etype == "QUERY_COMPLETED":
+        hitl = p.get("hitl_required", False)
+        decision = f"Answered — HITL required: {'Yes' if hitl else 'No'}"
+    elif etype == "INGEST_COMPLETED":
+        chunks = p.get("chunks")
+        decision = f"{chunks:,} chunks indexed" if isinstance(chunks, int) else "Indexed"
+    elif etype in ("USER_LOGIN", "USER_INVITED", "USER_INVITED_ACCEPTED"):
+        role = p.get("role")
+        decision = f"Role: {role}" if role else "Authenticated"
+    else:
+        decision = "—"
+
+    notes = (
+        p.get("engineer_note")
+        or p.get("question_summary")
+        or p.get("anomaly")
+        or p.get("change_summary")
+        or ""
+    )
+
+    return [
+        str(e.id),
+        e.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") if e.created_at else "—",
+        category,
+        event_label,
+        actor,
+        segment,
+        confidence,
+        risk,
+        decision,
+        reg_ref,
+        e.ip_address or "—",
+        notes,
+    ]
 
 
 @router.get("", response_model=AuditListResponse)
@@ -25,10 +132,20 @@ async def list_audit_events(
     user: Annotated[User, Depends(RequireEngineer)] = None,
     db: Annotated[AsyncSession, Depends(get_db)] = None,
 ) -> AuditListResponse:
-    """Return paginated, filterable audit trail. Read-only; no row can be deleted via API."""
+    """Paginated, filterable audit trail. Engineers see operational events only; admins see all."""
     base_stmt = select(AuditEvent)
 
+    # Engineers cannot see identity / security events
+    if user.role == "ENGINEER":
+        base_stmt = base_stmt.where(
+            AuditEvent.event_type.not_in(ADMIN_ONLY_EVENT_TYPES)
+        )
+
+    # Caller-supplied filters
     if event_type:
+        # Silently ignore if engineer requests an admin-only type
+        if user.role == "ENGINEER" and event_type in ADMIN_ONLY_EVENT_TYPES:
+            return AuditListResponse(total=0, page=page, page_size=page_size, items=[])
         base_stmt = base_stmt.where(AuditEvent.event_type == event_type)
     if actor_id:
         base_stmt = base_stmt.where(AuditEvent.actor_id == actor_id)
@@ -52,31 +169,74 @@ async def list_audit_events(
 @router.get("/export")
 async def export_audit_csv(
     event_type: str | None = None,
-    user: Annotated[User, Depends(RequireAdmin)] = None,
+    user: Annotated[User, Depends(RequireEngineer)] = None,
     db: Annotated[AsyncSession, Depends(get_db)] = None,
 ) -> StreamingResponse:
-    """Stream all audit events as a CSV download for regulatory reporting."""
+    """
+    Download a PHMSA-formatted CSV of audit events.
+    Engineers receive operational events only; admins receive the full log.
+    Suitable as supporting documentation for IMP compliance reviews under
+    49 CFR §192.911 and §192.945.
+    """
     stmt = select(AuditEvent).order_by(AuditEvent.created_at.asc())
+
+    if user.role == "ENGINEER":
+        stmt = stmt.where(AuditEvent.event_type.not_in(ADMIN_ONLY_EVENT_TYPES))
+        if event_type and event_type in ADMIN_ONLY_EVENT_TYPES:
+            event_type = None  # ignore the filter silently
+
     if event_type:
         stmt = stmt.where(AuditEvent.event_type == event_type)
 
     result = await db.execute(stmt)
     events = result.scalars().all()
 
-    def generate_csv():
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(["id", "event_type", "actor_id", "target_id", "target_type", "ip_address", "created_at"])
-        for e in events:
-            writer.writerow(
-                [str(e.id), e.event_type, e.actor_id, e.target_id, e.target_type, e.ip_address, e.created_at.isoformat()]
-            )
-            yield output.getvalue()
-            output.truncate(0)
-            output.seek(0)
+    # Bulk-resolve actor UUIDs → emails to avoid N+1 queries
+    actor_uuids = {
+        uuid.UUID(e.actor_id)
+        for e in events
+        if e.actor_id and _is_valid_uuid(e.actor_id)
+    }
+    actor_emails: dict[str, str] = {}
+    if actor_uuids:
+        rows = await db.execute(
+            select(User.id, User.email).where(User.id.in_(actor_uuids))
+        )
+        for uid, email in rows:
+            actor_emails[str(uid)] = email
+
+    # Build CSV in memory — audit logs are bounded in size
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Event ID",
+        "Timestamp (UTC)",
+        "Category",
+        "Event Type",
+        "Actor",
+        "Segment / Context",
+        "AI Confidence",
+        "Risk Level",
+        "Decision / Outcome",
+        "Regulatory Reference",
+        "IP Address",
+        "Notes",
+    ])
+
+    for e in events:
+        category, label, reg_ref = _EVENT_META.get(
+            e.event_type, ("Unknown", e.event_type, "—")
+        )
+        actor_email = actor_emails.get(str(e.actor_id), "")
+        writer.writerow(_derive_csv_row(e, actor_email, category, label, reg_ref))
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # utf-8-sig adds BOM for Excel compatibility
+
+    role_label = "operational" if user.role == "ENGINEER" else "full"
+    filename = f"pipelinegpt_audit_{role_label}_{user.email.split('@')[0]}.csv"
 
     return StreamingResponse(
-        generate_csv(),
+        iter([csv_bytes]),
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=audit_export.csv"},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
