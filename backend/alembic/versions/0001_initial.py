@@ -22,12 +22,6 @@ def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
 
-    # ── Enums ────────────────────────────────────────────────────────────────
-    op.execute("CREATE TYPE user_role AS ENUM ('OPERATOR', 'ENGINEER', 'ADMIN')")
-    op.execute("CREATE TYPE document_status AS ENUM ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')")
-    op.execute("CREATE TYPE query_status AS ENUM ('PENDING', 'PROCESSING', 'UNDER_REVIEW', 'DELIVERED', 'REJECTED')")
-    op.execute("CREATE TYPE hitl_decision AS ENUM ('APPROVE', 'EDIT', 'REJECT')")
-
     # ── users ────────────────────────────────────────────────────────────────
     op.create_table(
         "users",

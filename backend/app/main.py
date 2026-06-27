@@ -9,8 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import settings
 from app.middleware.logging import StructuredLoggingMiddleware
-from app.models.db import Base
-from app.routers import audit, auth, health, ingest, query, review
+from app.routers import admin, audit, auth, health, ingest, query, review
 
 engine = create_async_engine(settings.database_url, echo=False, pool_pre_ping=True)
 async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -18,8 +17,7 @@ async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_o
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Schema is managed by Alembic — no create_all here
     yield
     await engine.dispose()
 
@@ -44,6 +42,7 @@ Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(admin.router)
 app.include_router(query.router)
 app.include_router(ingest.router)
 app.include_router(review.router)
