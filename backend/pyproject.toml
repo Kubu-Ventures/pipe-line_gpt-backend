@@ -32,6 +32,7 @@ dependencies = [
     "pytest",
     "pytest-asyncio",
     "openai",
+    "pyotp",
 ]
 
 [project.optional-dependencies]

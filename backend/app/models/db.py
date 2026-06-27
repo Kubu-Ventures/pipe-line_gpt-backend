@@ -29,6 +29,12 @@ class UserRole(str, PyEnum):
     ADMIN = "ADMIN"
 
 
+class UserStatus(str, PyEnum):
+    ACTIVE = "ACTIVE"
+    PENDING = "PENDING"
+    SUSPENDED = "SUSPENDED"
+
+
 class HITLDecision(str, PyEnum):
     APPROVE = "APPROVE"
     EDIT = "EDIT"
@@ -59,13 +65,35 @@ class User(Base):
     role: Mapped[str] = mapped_column(
         Enum("OPERATOR", "ENGINEER", "ADMIN", name="user_role"), nullable=False, default="OPERATOR"
     )
+    status: Mapped[str] = mapped_column(
+        Enum("ACTIVE", "PENDING", "SUSPENDED", name="user_status"), nullable=False, default="ACTIVE"
+    )
     preferred_lang: Mapped[str] = mapped_column(String(10), default="en")
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    mfa_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     queries: Mapped[list["Query"]] = relationship("Query", back_populates="user")
     hitl_reviews: Mapped[list["HITLReview"]] = relationship("HITLReview", back_populates="reviewer")
+    sent_invitations: Mapped[list["Invitation"]] = relationship("Invitation", back_populates="invited_by")
+
+
+class Invitation(Base):
+    __tablename__ = "invitations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    invited_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    invited_by: Mapped["User | None"] = relationship("User", back_populates="sent_invitations")
 
 
 class Document(Base):
