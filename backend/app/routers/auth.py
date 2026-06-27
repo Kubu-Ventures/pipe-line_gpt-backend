@@ -97,16 +97,13 @@ async def accept_invite(
     if now > expires:
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Invitation has expired. Request a new one from your administrator.")
 
-    if invite.email.lower() != body.email.lower():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email does not match invitation.")
-
-    existing = await db.execute(select(User).where(User.email == body.email))
+    existing = await db.execute(select(User).where(User.email == invite.email))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with this email already exists.")
 
     user = User(
         id=uuid.uuid4(),
-        email=body.email.lower(),
+        email=invite.email.lower(),
         hashed_password=hash_password(body.password),
         role=invite.role,
         status="ACTIVE",
@@ -124,7 +121,7 @@ async def accept_invite(
         actor_id=str(user.id),
         target_id=str(user.id),
         target_type="user",
-        payload={"email": user.email, "role": user.role},
+        payload={"email": invite.email, "role": invite.role},
         ip_address=request.client.host if request.client else None,
     )
 
