@@ -39,9 +39,10 @@ def ingest_document_task(
     import base64
 
     content = base64.b64decode(content_b64)
-    return asyncio.get_event_loop().run_until_complete(
-        _ingest_async(document_id, source_type, filename, content)
-    )
+    try:
+        return asyncio.run(_ingest_async(document_id, source_type, filename, content))
+    except Exception as exc:
+        raise self.retry(exc=exc, countdown=30)
 
 
 _engine = None
@@ -142,4 +143,4 @@ async def _ingest_async(
         except Exception as exc:
             doc.status = "FAILED"
             await db.commit()
-            raise self.retry(exc=exc, countdown=30)
+            raise exc

@@ -26,6 +26,7 @@ dependencies = [
     "langdetect",
     "presidio-analyzer",
     "presidio-anonymizer",
+    "fastembed>=0.3",
     "sentence-transformers",
     "redis",
     "alembic",
