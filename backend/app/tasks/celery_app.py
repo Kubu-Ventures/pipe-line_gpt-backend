@@ -4,7 +4,6 @@ import asyncio
 import uuid
 
 from celery import Celery
-
 from app.config import settings
 
 celery_app = Celery(
@@ -22,6 +21,7 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_acks_late=True,
 )
+
 
 
 @celery_app.task(bind=True, name="tasks.ingest_document", max_retries=3)
@@ -44,23 +44,33 @@ def ingest_document_task(
     )
 
 
+_engine = None
+_AsyncSessionLocal = None
+
+
+def _get_session_factory():
+    global _engine, _AsyncSessionLocal
+    if _AsyncSessionLocal is None:
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+        from sqlalchemy.orm import sessionmaker
+        _engine = create_async_engine(settings.database_url, echo=False, pool_size=2, max_overflow=2)
+        _AsyncSessionLocal = sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
+    return _AsyncSessionLocal
+
+
 async def _ingest_async(
     document_id: str,
     source_type: str,
     filename: str,
     content: bytes,
 ) -> dict:
-    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-    from sqlalchemy.orm import sessionmaker
-
     from app.ingest.csv_loader import load_csv
     from app.ingest.pdf_loader import load_pdf
     from app.ingest.phmsa_loader import load_phmsa_tsv, load_phmsa_zip
     from app.models.db import Chunk, Document
     from app.services.embedder import embed_texts
 
-    engine = create_async_engine(settings.database_url, echo=False)
-    AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    AsyncSessionLocal = _get_session_factory()
 
     async with AsyncSessionLocal() as db:
         from sqlalchemy import select

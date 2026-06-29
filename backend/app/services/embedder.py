@@ -1,30 +1,32 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+from functools import lru_cache
 
-import httpx
+EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
+EMBED_DIM = 384
 
-from app.config import settings
+
+@lru_cache(maxsize=1)
+def _get_model():
+    from fastembed import TextEmbedding
+    return TextEmbedding(model_name=EMBED_MODEL_NAME)
 
 
 async def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed a batch of texts using OpenAI text-embedding-3-small."""
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            "https://api.openai.com/v1/embeddings",
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-            json={"model": settings.embedding_model, "input": texts},
-        )
-        response.raise_for_status()
-    data = response.json()
-    # Sort by index to maintain order
-    items = sorted(data["data"], key=lambda x: x["index"])
-    return [item["embedding"] for item in items]
+    """Embed texts using fastembed (ONNX-based, no API key, no CUDA required)."""
+    model = _get_model()
+    loop = asyncio.get_event_loop()
+    embeddings = await loop.run_in_executor(
+        None, lambda: [e.tolist() for e in model.embed(texts)]
+    )
+    return embeddings
 
 
 async def embed_single(text: str) -> list[float]:
-    embeddings = await embed_texts([text])
-    return embeddings[0]
+    results = await embed_texts([text])
+    return results[0]
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:

@@ -26,15 +26,15 @@ router = APIRouter(prefix="/review", tags=["review"])
 async def get_review_queue(
     page: int = 1,
     page_size: int = 20,
+    status: str | None = None,
     user: Annotated[User, Depends(RequireEngineer)] = None,
     db: Annotated[AsyncSession, Depends(get_db)] = None,
 ) -> list[ReviewQueueItem]:
-    """Return paginated list of AI responses pending human review, ordered by risk (undecided first)."""
+    """Return paginated list of AI responses, filtered by status (PENDING/APPROVED/REJECTED/all)."""
     offset = (page - 1) * page_size
 
     stmt = (
         select(HITLReview)
-        .where(HITLReview.decision.is_(None))
         .options(
             selectinload(HITLReview.response).selectinload(Response.query)
         )
@@ -42,6 +42,14 @@ async def get_review_queue(
         .offset(offset)
         .limit(page_size)
     )
+
+    if status == "PENDING":
+        stmt = stmt.where(HITLReview.decision.is_(None))
+    elif status == "APPROVED":
+        stmt = stmt.where(HITLReview.decision == "APPROVE")
+    elif status == "REJECTED":
+        stmt = stmt.where(HITLReview.decision == "REJECT")
+    # else: no filter — return all
     result = await db.execute(stmt)
     reviews = result.scalars().all()
 
@@ -57,17 +65,36 @@ async def get_review_queue(
                 except Exception:
                     pass
 
+        conf = response.confidence_score if response else 0.0
+        if conf >= 0.7:
+            risk_level = "LOW"
+        elif conf >= 0.4:
+            risk_level = "MEDIUM"
+        else:
+            risk_level = "HIGH"
+
+        if review.decision is None:
+            status = "PENDING"
+        elif review.decision == "APPROVE":
+            status = "APPROVED"
+        elif review.decision == "REJECT":
+            status = "REJECTED"
+        else:
+            status = review.decision
+
         items.append(
             ReviewQueueItem(
-                review_id=review.id,
+                id=review.id,
                 response_id=review.response_id,
                 query_id=query.id if query else uuid.uuid4(),
-                question=query.question_raw if query else "",
-                ai_answer=review.original_text,
-                confidence_score=response.confidence_score if response else 0.0,
-                citations=citations,
-                source_chunks=[],
-                created_at=review.reviewed_at or response.query.query_ts if query else None,
+                question_raw=query.question_raw if query else "",
+                answer_text=review.original_text or "",
+                confidence_score=conf,
+                citations_json=citations,
+                risk_level=risk_level,
+                status=status,
+                decision=review.decision,
+                created_at=review.reviewed_at or (query.query_ts if query else None),
             )
         )
 

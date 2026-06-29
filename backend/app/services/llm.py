@@ -89,6 +89,20 @@ def extract_citations(answer: str, chunks: list[dict]) -> list[Citation]:
     return citations
 
 
+_LANG_NAMES: dict[str, str] = {
+    "en": "English",
+    "fr": "French",
+    "es": "Spanish",
+    "ar": "Arabic",
+    "zh": "Chinese (Simplified)",
+    "ru": "Russian",
+    "pt": "Portuguese",
+    "de": "German",
+    "ja": "Japanese",
+    "hi": "Hindi",
+}
+
+
 async def stream_answer(
     question: str,
     context_block: str,
@@ -98,8 +112,13 @@ async def stream_answer(
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     lang_instruction = ""
-    if language and language != "en":
-        lang_instruction = f"\nPlease respond in {language} while keeping source citation tags in English."
+    if language and language.lower() != "en":
+        lang_name = _LANG_NAMES.get(language.lower(), language)
+        lang_instruction = (
+            f"\nIMPORTANT: You MUST respond entirely in {lang_name}. "
+            f"All explanations, analysis, and recommendations must be written in {lang_name}. "
+            "Only keep source citation tags (e.g. [SRC-001]) in their original format."
+        )
 
     user_message = (
         f"RETRIEVED CONTEXT:\n{context_block}\n\n"
