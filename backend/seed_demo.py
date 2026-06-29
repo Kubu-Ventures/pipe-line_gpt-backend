@@ -37,13 +37,13 @@ DEMO_ACCOUNTS = [
         "email": "demo-engineer@pipelinegpt.xyz",
         "password": "DemoEng2026!",
         "role": "ENGINEER",
-        "mfa_enabled": True,  # pre-enrolled so judges bypass TOTP setup
+        "mfa_enabled": False,
     },
     {
         "email": "demo-admin@pipelinegpt.xyz",
         "password": "DemoAdmin2026!",
         "role": "ADMIN",
-        "mfa_enabled": True,  # pre-enrolled
+        "mfa_enabled": False,
     },
 ]
 
@@ -60,7 +60,12 @@ async def seed() -> None:
             result = await session.execute(select(User).where(User.email == acc["email"]))
             existing = result.scalar_one_or_none()
             if existing:
-                print(f"  SKIP  {acc['email']} (already exists)")
+                # Always sync mfa_enabled so removing MFA from demo accounts takes effect
+                if existing.mfa_enabled != acc["mfa_enabled"]:
+                    existing.mfa_enabled = acc["mfa_enabled"]
+                    print(f"  UPDATE {acc['email']} (mfa_enabled → {acc['mfa_enabled']})")
+                else:
+                    print(f"  SKIP  {acc['email']} (already exists)")
                 continue
 
             user = User(
