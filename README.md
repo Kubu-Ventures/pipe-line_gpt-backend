@@ -36,8 +36,8 @@ A FastAPI backend that powers a retrieval-augmented generation (RAG) interface f
 
 ```bash
 # 1. Clone and enter the backend directory
-git clone https://github.com/Kubu-Ventures/Rosen-backend.git
-cd Rosen-backend/backend
+git clone https://github.com/Kubu-Ventures/pipe-line_gpt-backend.git
+cd pipe-line_gpt-backend/backend
 
 # 2. Create your environment file
 cp .env.example .env
