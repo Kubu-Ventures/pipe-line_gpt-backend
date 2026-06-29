@@ -14,16 +14,17 @@ Demo credentials:
 from __future__ import annotations
 
 import asyncio
-import sys
 import uuid
 
-from passlib.context import CryptContext
+import bcrypt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 DATABASE_URL = "postgresql+asyncpg://pipelinegpt:pipelinegpt@db:5432/pipelinegpt"
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def _hash(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(12)).decode("utf-8")
 
 DEMO_ACCOUNTS = [
     {
@@ -65,7 +66,7 @@ async def seed() -> None:
             user = User(
                 id=uuid.uuid4(),
                 email=acc["email"],
-                hashed_password=pwd_context.hash(acc["password"]),
+                hashed_password=_hash(acc["password"]),
                 role=acc["role"],
                 status="ACTIVE",
                 mfa_enabled=acc["mfa_enabled"],
