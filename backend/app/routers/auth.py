@@ -74,6 +74,27 @@ async def get_me(user: Annotated[User, Depends(get_current_user)]) -> UserOut:
     return UserOut.model_validate(user)
 
 
+_SUPPORTED_LOCALES = {"en", "fr", "es", "ar", "zh", "ru", "pt", "de", "ja", "hi"}
+
+
+@router.patch("/me/language", response_model=UserOut)
+async def update_preferred_language(
+    body: dict,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> UserOut:
+    lang = body.get("language", "").lower()
+    if lang not in _SUPPORTED_LOCALES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported language. Must be one of: {sorted(_SUPPORTED_LOCALES)}",
+        )
+    user.preferred_lang = lang
+    await db.commit()
+    await db.refresh(user)
+    return UserOut.model_validate(user)
+
+
 @router.post("/accept-invite", status_code=status.HTTP_201_CREATED)
 async def accept_invite(
     body: AcceptInviteRequest,

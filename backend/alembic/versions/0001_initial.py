@@ -66,7 +66,7 @@ def upgrade() -> None:
         sa.Column("token_count", sa.Integer(), server_default="0"),
         sa.Column("page_ref", sa.String(50), nullable=True),
         sa.Column("section_label", sa.String(255), nullable=True),
-        sa.Column("embedding", Vector(1536), nullable=True),
+        sa.Column("embedding", Vector(384), nullable=True),
     )
     op.create_index("ix_chunks_document_id", "chunks", ["document_id"])
     # ivfflat approximate nearest-neighbour index for fast cosine similarity search

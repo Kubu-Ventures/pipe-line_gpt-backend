@@ -125,15 +125,17 @@ class IngestStatusResponse(BaseModel):
 # ── Review (HITL) ─────────────────────────────────────────────────────────────
 
 class ReviewQueueItem(BaseModel):
-    review_id: uuid.UUID
+    id: uuid.UUID           # review_id
     response_id: uuid.UUID
     query_id: uuid.UUID
-    question: str
-    ai_answer: str
+    question_raw: str
+    answer_text: str
     confidence_score: float
-    citations: list[Citation]
-    source_chunks: list[dict[str, Any]]
+    citations_json: list[Citation]
+    risk_level: str         # HIGH | MEDIUM | LOW
+    status: str             # PENDING | APPROVED | REJECTED
     created_at: datetime
+    decision: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -170,6 +172,23 @@ class AuditListResponse(BaseModel):
     page: int
     page_size: int
     items: list[AuditEventOut]
+
+
+# ── Query history ─────────────────────────────────────────────────────────────
+
+class QueryHistoryItem(BaseModel):
+    query_id: uuid.UUID
+    question: str
+    asked_at: datetime
+    status: str                   # UNDER_REVIEW | DELIVERED | REJECTED
+    hitl_required: bool
+    answer_text: str              # original AI answer
+    final_text: str | None = None # engineer-approved / edited text
+    decision: str | None = None   # APPROVE | EDIT | REJECT
+    reason: str | None = None
+    reviewed_at: datetime | None = None
+    citations: list[Citation] = []
+    confidence_score: float
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
