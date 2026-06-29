@@ -136,6 +136,14 @@ async def _ingest_async(
 
             doc.chunk_count = len(raw_chunks)
             doc.status = "COMPLETED"
+
+            # Extract structured intelligence from the document
+            try:
+                from app.services.insights import extract_document_insights
+                doc.insights_json = await extract_document_insights(filename, raw_chunks) or {}
+            except Exception:
+                doc.insights_json = {}
+
             await db.commit()
 
             return {"document_id": document_id, "chunk_count": len(raw_chunks), "status": "COMPLETED"}

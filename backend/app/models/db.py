@@ -114,6 +114,7 @@ class Document(Base):
         Enum("PENDING", "PROCESSING", "COMPLETED", "FAILED", name="document_status"),
         default="PENDING",
     )
+    insights_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     chunks: Mapped[list["Chunk"]] = relationship("Chunk", back_populates="document", cascade="all, delete-orphan")
 
