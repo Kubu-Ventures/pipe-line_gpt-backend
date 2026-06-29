@@ -8,13 +8,15 @@ from typing import Annotated, AsyncIterator
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.middleware.auth import RequireOperator, get_db, get_current_user
 from app.middleware.rate_limit import check_and_consume_tokens, get_redis
 from app.models.db import Query, Response, User
-from app.models.schemas import QueryRequest
+from app.models.schemas import QueryRequest, QueryHistoryItem
 from app.services import audit_log
 from app.services.embedder import cosine_similarity, embed_single, embed_texts
 from app.services.hitl import classify_risk, queue_for_review
@@ -87,6 +89,58 @@ async def _store_semantic_cache(
         pass
 
 
+@router.get("/history", response_model=list[QueryHistoryItem])
+async def get_query_history(
+    limit: int = 50,
+    user: Annotated[User, Depends(RequireOperator)] = None,
+    db: Annotated[AsyncSession, Depends(get_db)] = None,
+) -> list[QueryHistoryItem]:
+    """Return the current user's query history, oldest-first, with review outcomes."""
+    from app.models.schemas import Citation as CitationSchema
+
+    stmt = (
+        select(Query)
+        .where(Query.user_id == user.id)
+        .options(
+            selectinload(Query.response).selectinload(Response.hitl_review)
+        )
+        .order_by(Query.query_ts.desc())
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    queries = result.scalars().all()
+
+    items: list[QueryHistoryItem] = []
+    for q in reversed(queries):           # oldest first for display
+        resp = q.response
+        if not resp:
+            continue
+        review = resp.hitl_review
+        citations: list[CitationSchema] = []
+        if resp.citations_json:
+            for c in resp.citations_json:
+                try:
+                    citations.append(CitationSchema(**c))
+                except Exception:
+                    pass
+        items.append(QueryHistoryItem(
+            query_id=q.id,
+            question=q.question_raw,
+            asked_at=q.query_ts,
+            status=q.status,
+            hitl_required=q.hitl_required,
+            answer_text=resp.answer_text,
+            final_text=review.final_text if review else None,
+            decision=review.decision if review else None,
+            reason=review.reason if review else None,
+            reviewed_at=review.reviewed_at if review else None,
+            citations=citations,
+            confidence_score=resp.confidence_score,
+        ))
+
+    return items
+
+
 @router.post("")
 async def query_endpoint(
     request_body: QueryRequest,
@@ -128,9 +182,13 @@ async def query_endpoint(
             yield f"data: {payload}\n\n"
             return
 
-        # 3. Query expansion
-        variants = await expand_query(clean_question)
-        variant_embeddings = await embed_texts(variants) if variants else []
+        # 3. Query expansion (best-effort — skip if API unavailable)
+        try:
+            variants = await expand_query(clean_question)
+            variant_embeddings = await embed_texts(variants) if variants else []
+        except Exception:
+            variants = []
+            variant_embeddings = []
         all_embeddings = [query_embedding] + variant_embeddings
 
         # 4. Vector retrieval — union results across all query variants, deduplicate by chunk id
@@ -165,9 +223,21 @@ async def query_endpoint(
 
         # 7 + 8. Stream answer from Claude
         full_answer = ""
-        async for token in stream_answer(clean_question, context_block, language=language):
-            full_answer += token
-            yield f"data: {json.dumps({'delta': token, 'citations': [], 'hitl_required': False, 'query_id': query_id})}\n\n"
+        try:
+            async for token in stream_answer(clean_question, context_block, language=language):
+                full_answer += token
+                yield f"data: {json.dumps({'delta': token, 'citations': [], 'hitl_required': False, 'query_id': query_id})}\n\n"
+        except Exception as exc:
+            err_msg = str(exc)
+            if "credit" in err_msg.lower() or "balance" in err_msg.lower():
+                err_msg = "The Anthropic API account has insufficient credits. Please add credits at console.anthropic.com/settings/billing and try again."
+            elif "authentication" in err_msg.lower() or "api_key" in err_msg.lower():
+                err_msg = "Invalid Anthropic API key. Please update ANTHROPIC_API_KEY in the backend .env file."
+            else:
+                err_msg = f"LLM error: {err_msg}"
+            yield f"data: {json.dumps({'delta': err_msg, 'citations': [], 'hitl_required': False, 'query_id': query_id, 'error': True})}\n\n"
+            yield f"data: {json.dumps({'delta': '', 'citations': [], 'hitl_required': False, 'query_id': query_id, 'done': True})}\n\n"
+            return
 
         # 9. Post-generation classification
         confidence = estimate_confidence(full_answer, reranked)
