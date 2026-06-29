@@ -130,7 +130,7 @@ class Chunk(Base):
     token_count: Mapped[int] = mapped_column(Integer, default=0)
     page_ref: Mapped[str | None] = mapped_column(String(50), nullable=True)
     section_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(384), nullable=True)
 
     document: Mapped["Document"] = relationship("Document", back_populates="chunks")
 
