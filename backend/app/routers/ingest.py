@@ -85,6 +85,7 @@ async def ingest_file(
         source_type=source_type,
         sha256_hash=sha256,
         status="PENDING",
+        operator_id=user.email,
     )
     db.add(doc)
     await db.commit()
@@ -154,6 +155,7 @@ async def ingest_history(
             "ingest_date": doc.ingest_date.isoformat() if doc.ingest_date else None,
             "segment_id": doc.segment_id,
             "commodity": doc.commodity,
+            "uploaded_by": doc.operator_id,
         }
         for doc in docs
     ]
@@ -324,6 +326,7 @@ async def phmsa_sync(
             source_type=source_type,
             sha256_hash=sha256,
             status="PENDING",
+            operator_id=user.email,
         )
         db.add(doc)
         await db.commit()
