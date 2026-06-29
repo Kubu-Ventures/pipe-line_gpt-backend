@@ -37,13 +37,13 @@ DEMO_ACCOUNTS = [
         "email": "demo-engineer@pipelinegpt.xyz",
         "password": "DemoEng2026!",
         "role": "ENGINEER",
-        "mfa_enabled": False,
+        "mfa_enabled": True,
     },
     {
         "email": "demo-admin@pipelinegpt.xyz",
         "password": "DemoAdmin2026!",
         "role": "ADMIN",
-        "mfa_enabled": False,
+        "mfa_enabled": True,
     },
 ]
 
