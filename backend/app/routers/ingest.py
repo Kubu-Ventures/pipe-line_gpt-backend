@@ -10,9 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.middleware.auth import RequireEngineer, RequireOperator, get_db
+from app.middleware.rate_limit import get_redis
 from app.models.db import Document, User
 from app.models.schemas import IngestResponse, IngestStatusResponse
-from app.services import audit_log
+from app.services import audit_log, semantic_cache
 from app.services.embedder import content_hash
 from app.tasks.celery_app import celery_app, ingest_document_task
 
@@ -46,13 +47,18 @@ async def ingest_file(
 ) -> IngestResponse:
     """Upload a document for async ingestion. Returns a task_id for status polling."""
 
-    # Validate size
-    content = await file.read()
-    if len(content) > settings.upload_max_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File exceeds {settings.upload_max_bytes // 1_048_576} MB limit.",
-        )
+    # Read in bounded chunks so an oversized upload is rejected without buffering all of it.
+    buf = bytearray()
+    while chunk := await file.read(1024 * 1024):
+        buf.extend(chunk)
+        if len(buf) > settings.upload_max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"File exceeds {settings.upload_max_bytes // 1_048_576} MB limit.",
+            )
+    content = bytes(buf)
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty.")
 
     # Validate MIME
     if file.content_type and file.content_type not in ALLOWED_MIME_TYPES:
@@ -61,9 +67,18 @@ async def ingest_file(
             detail=f"Unsupported file type: {file.content_type}",
         )
 
-    filename = file.filename or "upload"
+    filename = (file.filename or "upload").replace("\\", "/").rsplit("/", 1)[-1][:255]
     suffix = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    source_type = EXTENSION_TO_SOURCE_TYPE.get(suffix, "pdf")
+    source_type = EXTENSION_TO_SOURCE_TYPE.get(suffix)
+    if source_type is None:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Unsupported file extension. Allowed: {', '.join(sorted(EXTENSION_TO_SOURCE_TYPE))}",
+        )
+    if source_type == "pdf" and not content.startswith(b"%PDF-"):
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="File is not a valid PDF.")
+    if source_type == "phmsa_zip" and not content.startswith(b"PK"):
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="File is not a valid ZIP.")
 
     # SHA-256 deduplication
     sha256 = content_hash(content)
@@ -118,7 +133,10 @@ async def ingest_file(
 
 
 @router.get("/status/{task_id}", response_model=IngestStatusResponse)
-async def ingest_status(task_id: str) -> IngestStatusResponse:
+async def ingest_status(
+    task_id: str,
+    user: Annotated[User, Depends(RequireOperator)],
+) -> IngestStatusResponse:
     """Poll the status of an ingestion task."""
     from celery.result import AsyncResult
 
@@ -161,7 +179,7 @@ async def ingest_history(
 
 @router.get("/chunk/{document_id}/{chunk_index}")
 async def get_chunk_text(
-    document_id: str,
+    document_id: uuid.UUID,
     chunk_index: int,
     user: Annotated[User, Depends(RequireOperator)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -171,7 +189,7 @@ async def get_chunk_text(
 
     result = await db.execute(
         select(Chunk).where(
-            Chunk.document_id == uuid.UUID(document_id),
+            Chunk.document_id == document_id,
             Chunk.chunk_index == chunk_index,
         )
     )
@@ -179,7 +197,7 @@ async def get_chunk_text(
     if not chunk:
         raise HTTPException(status_code=404, detail="Chunk not found")
     return {
-        "document_id": document_id,
+        "document_id": str(document_id),
         "chunk_index": chunk_index,
         "text_content": chunk.text_content,
         "section_label": chunk.section_label,
@@ -213,6 +231,7 @@ async def delete_document(
 
     await db.delete(doc)
     await db.commit()
+    await semantic_cache.invalidate(get_redis())
 
     await audit_log.log_event(
         db,
@@ -579,7 +598,9 @@ async def phmsa_sync(
     user: Annotated[User, Depends(RequireOperator)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    """Load realistic sample pipeline datasets for demo and testing."""
+    """Load realistic sample pipeline datasets for demo and testing (DEMO_MODE only)."""
+    if not settings.demo_mode:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     import base64
 
     datasets = _build_demo_datasets()

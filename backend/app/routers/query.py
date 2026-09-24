@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
+from functools import lru_cache
 from typing import Annotated
 
-import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, Request
+from fastapi import Query as QueryParam
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,11 +19,11 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.middleware.auth import RequireOperator, get_db
-from app.middleware.rate_limit import check_and_consume_tokens, get_redis
+from app.middleware.rate_limit import get_redis, record_token_usage, token_budget_dependency
 from app.models.db import Query, Response, User
-from app.models.schemas import QueryHistoryItem, QueryRequest
-from app.services import audit_log
-from app.services.embedder import cosine_similarity, embed_single, embed_texts
+from app.models.schemas import Citation, QueryHistoryItem, QueryRequest
+from app.services import audit_log, semantic_cache
+from app.services.embedder import embed_single, embed_texts
 from app.services.hitl import classify_risk, queue_for_review
 from app.services.llm import (
     build_context_block,
@@ -28,24 +31,44 @@ from app.services.llm import (
     expand_query,
     extract_citations,
     stream_answer,
+    user_facing_llm_error,
 )
 from app.services.retriever import rerank_chunks, retrieve_chunks
 
 router = APIRouter(prefix="/query", tags=["query"])
 logger = logging.getLogger(__name__)
 
+HELD_MESSAGE = (
+    "This answer contains operational recommendations or low-confidence findings and is being held "
+    "for review by a qualified engineer. It will appear here once approved."
+)
+REJECTED_MESSAGE = "This answer was rejected by the reviewing engineer and has been withheld."
+
+# Seconds between SSE keep-alive comments while the full answer is generated server-side.
+HEARTBEAT_SECONDS = 10.0
+# Size of the pieces a finished answer is replayed in, so the client still renders progressively.
+REPLAY_CHUNK_CHARS = 48
+
+
+@lru_cache(maxsize=1)
+def _presidio_engines():
+    from presidio_analyzer import AnalyzerEngine
+    from presidio_anonymizer import AnonymizerEngine
+
+    return AnalyzerEngine(), AnonymizerEngine()
+
 
 def _scrub_pii(text: str) -> str:
-    """Run Microsoft Presidio PII scrubber on user input."""
+    """Run Microsoft Presidio PII scrubber on user input (no-op if Presidio isn't installed)."""
     try:
-        from presidio_analyzer import AnalyzerEngine
-        from presidio_anonymizer import AnonymizerEngine
-
-        analyzer = AnalyzerEngine()
-        anonymizer = AnonymizerEngine()
+        analyzer, anonymizer = _presidio_engines()
+    except ImportError:
+        return text
+    try:
         results = analyzer.analyze(text=text, language="en")
         return anonymizer.anonymize(text=text, analyzer_results=results).text
     except Exception:
+        logger.warning("PII scrub failed; using raw question", exc_info=True)
         return text
 
 
@@ -58,49 +81,26 @@ def _detect_language(text: str) -> str:
         return "en"
 
 
-async def _check_semantic_cache(redis: aioredis.Redis, query_embedding: list[float]) -> dict | None:
-    """Return cached response if a sufficiently similar query was answered recently."""
-    try:
-        keys = await redis.keys("query_cache:*")
-        for key in keys:
-            cached_raw = await redis.get(key)
-            if not cached_raw:
-                continue
-            cached = json.loads(cached_raw)
-            cached_emb = cached.get("embedding", [])
-            if not cached_emb:
-                continue
-            sim = cosine_similarity(query_embedding, cached_emb)
-            if sim >= settings.semantic_cache_similarity:
-                return cached
-    except Exception:
-        logger.warning("Semantic cache lookup failed", exc_info=True)
-    return None
+def _sse(**data: object) -> str:
+    return f"data: {json.dumps(data)}\n\n"
 
 
-async def _store_semantic_cache(
-    redis: aioredis.Redis,
-    query_id: str,
-    embedding: list[float],
-    response_data: dict,
-) -> None:
-    key = f"query_cache:{query_id}"
-    payload = {"embedding": embedding, **response_data}
-    try:
-        await redis.setex(key, settings.semantic_cache_ttl_seconds, json.dumps(payload))
-    except Exception:
-        logger.warning("Semantic cache write failed", exc_info=True)
+def _operator_visible_answer(q: Query, resp: Response) -> str:
+    """Never expose an unreviewed or rejected answer to the asker."""
+    if q.status == "UNDER_REVIEW":
+        return HELD_MESSAGE
+    if q.status == "REJECTED":
+        return REJECTED_MESSAGE
+    return resp.answer_text
 
 
 @router.get("/history", response_model=list[QueryHistoryItem])
 async def get_query_history(
-    limit: int = 50,
-    user: Annotated[User, Depends(RequireOperator)] = None,
-    db: Annotated[AsyncSession, Depends(get_db)] = None,
+    user: Annotated[User, Depends(RequireOperator)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Annotated[int, QueryParam(ge=1, le=200)] = 50,
 ) -> list[QueryHistoryItem]:
     """Return the current user's query history, oldest-first, with review outcomes."""
-    from app.models.schemas import Citation as CitationSchema
-
     stmt = (
         select(Query)
         .where(Query.user_id == user.id)
@@ -108,8 +108,7 @@ async def get_query_history(
         .order_by(Query.query_ts.desc())
         .limit(limit)
     )
-    result = await db.execute(stmt)
-    queries = result.scalars().all()
+    queries = (await db.execute(stmt)).scalars().all()
 
     items: list[QueryHistoryItem] = []
     for q in reversed(queries):  # oldest first for display
@@ -117,13 +116,12 @@ async def get_query_history(
         if not resp:
             continue
         review = resp.hitl_review
-        citations: list[CitationSchema] = []
-        if resp.citations_json:
-            for c in resp.citations_json:
-                try:
-                    citations.append(CitationSchema(**c))
-                except Exception:
-                    logger.warning("Skipping malformed citation on query %s", q.id, exc_info=True)
+        citations: list[Citation] = []
+        for c in resp.citations_json or []:
+            try:
+                citations.append(Citation(**c))
+            except Exception:
+                logger.warning("Skipping malformed citation on query %s", q.id, exc_info=True)
         items.append(
             QueryHistoryItem(
                 query_id=q.id,
@@ -131,7 +129,7 @@ async def get_query_history(
                 asked_at=q.query_ts,
                 status=q.status,
                 hitl_required=q.hitl_required,
-                answer_text=resp.answer_text,
+                answer_text=_operator_visible_answer(q, resp),
                 final_text=review.final_text if review else None,
                 decision=review.decision if review else None,
                 reason=review.reason if review else None,
@@ -140,8 +138,33 @@ async def get_query_history(
                 confidence_score=resp.confidence_score,
             )
         )
-
     return items
+
+
+async def _generate_with_heartbeat(
+    question: str, context_block: str, language: str, usage: dict[str, int]
+) -> AsyncIterator[str | None]:
+    """Collect the full answer; yields None as a heartbeat while waiting, then the answer."""
+    parts: list[str] = []
+
+    async def _collect() -> None:
+        async for token in stream_answer(question, context_block, language=language, usage=usage):
+            parts.append(token)
+
+    task = asyncio.create_task(_collect())
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=HEARTBEAT_SECONDS)
+            if done:
+                task.result()  # re-raise generation errors
+                break
+            yield None
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+    yield "".join(parts)
 
 
 @router.post("")
@@ -150,167 +173,187 @@ async def query_endpoint(
     request: Request,
     user: Annotated[User, Depends(RequireOperator)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    _budget: Annotated[None, Depends(token_budget_dependency)],
 ) -> StreamingResponse:
     """
-    Main RAG query endpoint. Streams the answer via Server-Sent Events.
-    Each SSE event is a JSON object: {delta, citations, hitl_required, query_id}.
+    Main RAG query endpoint, answered via Server-Sent Events.
+
+    The full answer is generated and risk-classified server-side before any of it is
+    sent: low-risk answers are then streamed as `delta` events; answers routed to HITL
+    review are withheld and the client receives HELD_MESSAGE with `hitl_required: true`.
+    The last event carries `done: true` and the citations. `: ping` comments keep the
+    connection alive during generation.
     """
     redis = get_redis()
     query_id = str(uuid.uuid4())
     ip = request.client.host if request.client else None
+    # Plain values: ORM objects are expired by the rollback in the error path.
+    user_id = user.id
 
     async def event_stream() -> AsyncIterator[str]:
         start_time = time.perf_counter()
+        db_query: Query | None = None
+        base = {"query_id": query_id}
 
-        # 1. Language detection + PII scrub
-        detected_lang = _detect_language(request_body.question)
-        language = request_body.language or detected_lang
-        clean_question = _scrub_pii(request_body.question)
+        try:
+            detected_lang = _detect_language(request_body.question)
+            language = request_body.language or detected_lang
+            clean_question = await asyncio.to_thread(_scrub_pii, request_body.question)
+            filters_json = request_body.filters.model_dump() if request_body.filters else None
+            scope = semantic_cache.cache_scope(language, filters_json)
 
-        # 2. Embed question
-        query_embedding = await embed_single(clean_question)
+            query_embedding = await embed_single(clean_question)
 
-        # 2a. Semantic cache check
-        cached = await _check_semantic_cache(redis, query_embedding)
-        if cached:
-            payload = json.dumps(
-                {
-                    "delta": cached.get("answer", ""),
-                    "citations": cached.get("citations", []),
-                    "hitl_required": False,
-                    "query_id": query_id,
-                    "cached": True,
-                }
+            db_query = Query(
+                id=uuid.UUID(query_id),
+                session_id=request_body.session_id,
+                user_id=user_id,
+                question_raw=request_body.question,
+                question_lang=language,
+                filters_json=filters_json,
+                hitl_required=False,
+                status="PROCESSING",
             )
-            yield f"data: {payload}\n\n"
-            return
-
-        # 3. Query expansion (best-effort — skip if API unavailable)
-        try:
-            variants = await expand_query(clean_question)
-            variant_embeddings = await embed_texts(variants) if variants else []
-        except Exception:
-            variants = []
-            variant_embeddings = []
-        all_embeddings = [query_embedding] + variant_embeddings
-
-        # 4. Vector retrieval — union results across all query variants, deduplicate by chunk id
-        all_chunks: list[dict] = []
-        seen_ids: set[str] = set()
-        for emb in all_embeddings:
-            retrieved = await retrieve_chunks(db, emb, request_body.filters, top_k=settings.top_k_retrieval)
-            for chunk in retrieved:
-                if chunk["id"] not in seen_ids:
-                    seen_ids.add(chunk["id"])
-                    all_chunks.append(chunk)
-
-        # 5. Rerank
-        reranked = rerank_chunks(clean_question, all_chunks, top_k=settings.top_k_rerank)
-
-        # 6. Context assembly
-        context_block = build_context_block(reranked)
-
-        # Persist query record
-        db_query = Query(
-            id=uuid.UUID(query_id),
-            session_id=request_body.session_id,
-            user_id=user.id,
-            question_raw=request_body.question,
-            question_lang=language,
-            filters_json=request_body.filters.model_dump() if request_body.filters else None,
-            hitl_required=False,
-            status="PROCESSING",
-        )
-        db.add(db_query)
-        await db.commit()
-
-        # 7 + 8. Stream answer from Claude
-        full_answer = ""
-        try:
-            async for token in stream_answer(clean_question, context_block, language=language):
-                full_answer += token
-                yield f"data: {json.dumps({'delta': token, 'citations': [], 'hitl_required': False, 'query_id': query_id})}\n\n"
-        except Exception as exc:
-            err_msg = str(exc)
-            if "credit" in err_msg.lower() or "balance" in err_msg.lower():
-                err_msg = "The Anthropic API account has insufficient credits. Please add credits at console.anthropic.com/settings/billing and try again."
-            elif "authentication" in err_msg.lower() or "api_key" in err_msg.lower():
-                err_msg = "Invalid Anthropic API key. Please update ANTHROPIC_API_KEY in the backend .env file."
-            else:
-                err_msg = f"LLM error: {err_msg}"
-            yield f"data: {json.dumps({'delta': err_msg, 'citations': [], 'hitl_required': False, 'query_id': query_id, 'error': True})}\n\n"
-            yield f"data: {json.dumps({'delta': '', 'citations': [], 'hitl_required': False, 'query_id': query_id, 'done': True})}\n\n"
-            return
-
-        # 9. Post-generation classification
-        confidence = estimate_confidence(full_answer, reranked)
-        citations = extract_citations(full_answer, reranked)
-        risk_level, hitl_required = classify_risk(full_answer, confidence)
-
-        latency_ms = int((time.perf_counter() - start_time) * 1000)
-
-        # Persist response
-        db_response = Response(
-            id=uuid.uuid4(),
-            query_id=db_query.id,
-            answer_text=full_answer,
-            citations_json=[c.model_dump() for c in citations],
-            confidence_score=confidence,
-            model_version=settings.llm_model,
-            prompt_tokens=0,
-            completion_tokens=0,
-            latency_ms=latency_ms,
-        )
-        db.add(db_response)
-        await db.flush()
-
-        # 10. HITL gate
-        if hitl_required:
-            await queue_for_review(db, db_response, db_query)
-        else:
-            db_query.status = "DELIVERED"
+            db.add(db_query)
             await db.commit()
 
-        # Token budget consumption (approximate)
-        approx_tokens = len(full_answer.split()) + len(clean_question.split())
-        await check_and_consume_tokens(str(user.id), approx_tokens)
+            # Only reviewed-safe (delivered) answers are ever cached, so a hit needs no HITL gate.
+            cached = await semantic_cache.lookup(redis, scope, query_embedding)
+            if cached:
+                db.add(
+                    Response(
+                        id=uuid.uuid4(),
+                        query_id=db_query.id,
+                        answer_text=cached["answer"],
+                        citations_json=cached.get("citations", []),
+                        confidence_score=cached.get("confidence", 1.0),
+                        risk_level="LOW",
+                        model_version=f"cache:{cached.get('model_version', settings.llm_model)}",
+                        latency_ms=int((time.perf_counter() - start_time) * 1000),
+                    )
+                )
+                db_query.status = "DELIVERED"
+                await db.commit()
+                await audit_log.log_event(
+                    db,
+                    event_type="QUERY_COMPLETED",
+                    actor_id=str(user_id),
+                    target_id=query_id,
+                    target_type="query",
+                    payload={"risk_level": "LOW", "hitl_required": False, "cached": True},
+                    ip_address=ip,
+                )
+                citations_out = cached.get("citations", [])
+                yield _sse(**base, delta=cached["answer"], citations=[], hitl_required=False, cached=True)
+                yield _sse(**base, delta="", citations=citations_out, hitl_required=False, cached=True, done=True)
+                return
 
-        # Cache the result
-        await _store_semantic_cache(
-            redis,
-            query_id,
-            query_embedding,
-            {"answer": full_answer, "citations": [c.model_dump() for c in citations]},
-        )
+            # Query expansion is best-effort: retrieval still works on the original question.
+            try:
+                variants = await expand_query(clean_question)
+                variant_embeddings = await embed_texts(variants) if variants else []
+            except Exception:
+                logger.warning("Query expansion failed; continuing without variants", exc_info=True)
+                variant_embeddings = []
 
-        # Audit log
-        await audit_log.log_event(
-            db,
-            event_type="QUERY_COMPLETED",
-            actor_id=str(user.id),
-            target_id=query_id,
-            target_type="query",
-            payload={"risk_level": risk_level, "hitl_required": hitl_required, "confidence": confidence},
-            ip_address=ip,
-        )
+            all_chunks: list[dict] = []
+            seen_ids: set[str] = set()
+            for emb in [query_embedding, *variant_embeddings]:
+                for chunk in await retrieve_chunks(db, emb, request_body.filters, top_k=settings.top_k_retrieval):
+                    if chunk["id"] not in seen_ids:
+                        seen_ids.add(chunk["id"])
+                        all_chunks.append(chunk)
 
-        # Final SSE event with full citations and HITL flag
-        final = json.dumps(
-            {
-                "delta": "",
-                "citations": [c.model_dump() for c in citations],
-                "hitl_required": hitl_required,
-                "query_id": query_id,
-                "done": True,
-            }
-        )
-        yield f"data: {final}\n\n"
+            reranked = await asyncio.to_thread(rerank_chunks, clean_question, all_chunks, settings.top_k_rerank)
+            context_block = build_context_block(reranked)
+
+            usage: dict[str, int] = {}
+            full_answer = ""
+            async for item in _generate_with_heartbeat(clean_question, context_block, language, usage):
+                if item is None:
+                    yield ": ping\n\n"
+                else:
+                    full_answer = item
+
+            confidence = estimate_confidence(full_answer, reranked)
+            citations = [c.model_dump() for c in extract_citations(full_answer, reranked)]
+            risk_level, hitl_required = classify_risk(full_answer, confidence)
+
+            db_response = Response(
+                id=uuid.uuid4(),
+                query_id=db_query.id,
+                answer_text=full_answer,
+                citations_json=citations,
+                confidence_score=confidence,
+                risk_level=risk_level,
+                model_version=settings.llm_model,
+                prompt_tokens=usage.get("input_tokens", 0),
+                completion_tokens=usage.get("output_tokens", 0),
+                latency_ms=int((time.perf_counter() - start_time) * 1000),
+            )
+            db.add(db_response)
+            await db.flush()
+
+            if hitl_required:
+                await queue_for_review(db, db_response, db_query)
+            else:
+                db_query.status = "DELIVERED"
+                await db.commit()
+                await semantic_cache.store(
+                    redis,
+                    scope,
+                    query_id,
+                    query_embedding,
+                    {
+                        "answer": full_answer,
+                        "citations": citations,
+                        "confidence": confidence,
+                        "model_version": settings.llm_model,
+                    },
+                )
+
+            # Enforced before the next request (token_budget_dependency); never fails this one.
+            await record_token_usage(str(user_id), usage.get("input_tokens", 0) + usage.get("output_tokens", 0))
+
+            await audit_log.log_event(
+                db,
+                event_type="QUERY_COMPLETED",
+                actor_id=str(user_id),
+                target_id=query_id,
+                target_type="query",
+                payload={"risk_level": risk_level, "hitl_required": hitl_required, "confidence": confidence},
+                ip_address=ip,
+            )
+
+            if hitl_required:
+                yield _sse(**base, delta=HELD_MESSAGE, citations=[], hitl_required=True, held=True)
+            else:
+                for i in range(0, len(full_answer), REPLAY_CHUNK_CHARS):
+                    yield _sse(**base, delta=full_answer[i : i + REPLAY_CHUNK_CHARS], citations=[], hitl_required=False)
+            yield _sse(**base, delta="", citations=citations, hitl_required=hitl_required, done=True)
+
+        except Exception as exc:
+            logger.exception("Query %s failed", query_id)
+            await db.rollback()
+            if db_query is not None:
+                db_query = await db.get(Query, uuid.UUID(query_id))
+                if db_query is not None:
+                    db_query.status = "FAILED"
+                    await db.commit()
+            await audit_log.log_event(
+                db,
+                event_type="QUERY_FAILED",
+                actor_id=str(user_id),
+                target_id=query_id,
+                target_type="query",
+                payload={"error_type": type(exc).__name__},
+                ip_address=ip,
+            )
+            yield _sse(**base, delta=user_facing_llm_error(exc), citations=[], hitl_required=False, error=True)
+            yield _sse(**base, delta="", citations=[], hitl_required=False, done=True)
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

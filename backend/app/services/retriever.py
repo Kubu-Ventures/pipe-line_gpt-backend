@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
+from functools import lru_cache
+
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.db import Chunk, Document
 from app.models.schemas import QueryFilters
+
+logger = logging.getLogger(__name__)
 
 
 async def retrieve_chunks(
@@ -78,20 +83,29 @@ async def retrieve_chunks(
     return chunks
 
 
+@lru_cache(maxsize=1)
+def _cross_encoder():
+    from sentence_transformers import CrossEncoder
+
+    return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+
 def rerank_chunks(query: str, chunks: list[dict], top_k: int | None = None) -> list[dict]:
-    """Rerank retrieved chunks using cross-encoder/ms-marco-MiniLM-L-6-v2."""
+    """Rerank retrieved chunks with a cross-encoder; CPU-bound, so call via a thread from async code."""
     k = top_k or settings.top_k_rerank
     if not chunks:
         return []
 
     try:
-        from sentence_transformers import CrossEncoder
+        model = _cross_encoder()
+    except ImportError:
+        # sentence-transformers is optional (lean install): fall back to vector similarity order.
+        return sorted(chunks, key=lambda c: c.get("similarity", 0), reverse=True)[:k]
 
-        model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-        pairs = [(query, c["text_content"]) for c in chunks]
-        scores = model.predict(pairs)
+    try:
+        scores = model.predict([(query, c["text_content"]) for c in chunks])
         ranked = sorted(zip(scores, chunks, strict=True), key=lambda x: x[0], reverse=True)
         return [c for _, c in ranked[:k]]
     except Exception:
-        # Graceful fallback to similarity score ordering if cross-encoder unavailable
+        logger.warning("Cross-encoder rerank failed; using similarity order", exc_info=True)
         return sorted(chunks, key=lambda c: c.get("similarity", 0), reverse=True)[:k]

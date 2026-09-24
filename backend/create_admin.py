@@ -2,15 +2,16 @@
 CLI script to create the first admin account.
 
 Usage:
-    python create_admin.py <email> <password>
+    python create_admin.py <email>          # prompts for the password
 
-The admin is created with status=ACTIVE and mfa_enabled=True (pre-enrolled).
+The admin is created ACTIVE without MFA; the first sign-in forces TOTP enrollment.
 Subsequent admins should be created through the /admin/invite endpoint.
 """
 
 from __future__ import annotations
 
 import asyncio
+import getpass
 import sys
 import uuid
 
@@ -40,7 +41,7 @@ async def create_admin(email: str, password: str) -> None:
             hashed_password=hash_password(password),
             role="ADMIN",
             status="ACTIVE",
-            mfa_enabled=True,
+            mfa_enabled=False,
         )
         session.add(user)
         await session.commit()
@@ -50,15 +51,17 @@ async def create_admin(email: str, password: str) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python create_admin.py <email> <password>")
+    if len(sys.argv) != 2:
+        print("Usage: python create_admin.py <email>")
         sys.exit(1)
 
     email_arg = sys.argv[1]
-    password_arg = sys.argv[2]
-
-    if len(password_arg) < 8:
-        print("Error: password must be at least 8 characters.")
+    password_arg = getpass.getpass("Password (min 12 characters): ")
+    if len(password_arg) < 12:
+        print("Error: password must be at least 12 characters.")
+        sys.exit(1)
+    if getpass.getpass("Confirm password: ") != password_arg:
+        print("Error: passwords do not match.")
         sys.exit(1)
 
     asyncio.run(create_admin(email_arg, password_arg))

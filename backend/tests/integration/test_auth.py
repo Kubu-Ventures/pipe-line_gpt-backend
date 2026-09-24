@@ -72,13 +72,13 @@ async def test_invite_accept_login_flow(client, make_user):
     )
     assert dup.status_code == 409
 
-    accept = await client.post("/auth/accept-invite", json={"token": token, "password": "S3cure-pass"})
+    accept = await client.post("/auth/accept-invite", json={"token": token, "password": "S3cure-passw0rd"})
     assert accept.status_code == 201
 
-    again = await client.post("/auth/accept-invite", json={"token": token, "password": "S3cure-pass"})
+    again = await client.post("/auth/accept-invite", json={"token": token, "password": "S3cure-passw0rd"})
     assert again.status_code == 409
 
-    login = await client.post("/auth/login", json={"email": "new.hire@example.com", "password": "S3cure-pass"})
+    login = await client.post("/auth/login", json={"email": "new.hire@example.com", "password": "S3cure-passw0rd"})
     assert login.status_code == 200
 
 
@@ -94,12 +94,12 @@ async def test_accept_expired_invite(client, make_user, db_session):
     db_session.add(invite)
     await db_session.commit()
 
-    resp = await client.post("/auth/accept-invite", json={"token": "expired-token", "password": "S3cure-pass"})
+    resp = await client.post("/auth/accept-invite", json={"token": "expired-token", "password": "S3cure-passw0rd"})
     assert resp.status_code == 410
 
 
 async def test_accept_unknown_invite(client):
-    resp = await client.post("/auth/accept-invite", json={"token": "nope", "password": "S3cure-pass"})
+    resp = await client.post("/auth/accept-invite", json={"token": "nope", "password": "S3cure-passw0rd"})
     assert resp.status_code == 404
 
 

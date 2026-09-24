@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
+from fastapi import Response as FastAPIResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,28 +15,36 @@ from app.models.db import AuditEvent, Chunk, Document, HITLReview, Query, Respon
 from app.models.schemas import HealthResponse
 
 router = APIRouter(tags=["health"])
+logger = logging.getLogger(__name__)
+
+
+@router.get("/health/live")
+async def liveness() -> dict:
+    """Process is up. No dependency checks — use for container liveness probes."""
+    return {"status": "ok"}
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check(db: AsyncSession = Depends(get_db)) -> HealthResponse:
+async def health_check(response: FastAPIResponse, db: Annotated[AsyncSession, Depends(get_db)]) -> HealthResponse:
+    """Readiness: 200 when Postgres and Redis answer, 503 otherwise. Error details go to logs only."""
     db_status = "ok"
     try:
         await db.execute(text("SELECT 1"))
-    except Exception as e:
-        db_status = f"error: {e}"
+    except Exception:
+        logger.exception("Health check: database unreachable")
+        db_status = "error"
 
     redis_status = "ok"
     try:
-        redis = get_redis()
-        await redis.ping()
-    except Exception as e:
-        redis_status = f"error: {e}"
+        await get_redis().ping()
+    except Exception:
+        logger.exception("Health check: redis unreachable")
+        redis_status = "error"
 
-    return HealthResponse(
-        status="ok" if db_status == "ok" and redis_status == "ok" else "degraded",
-        database=db_status,
-        redis=redis_status,
-    )
+    healthy = db_status == "ok" and redis_status == "ok"
+    if not healthy:
+        response.status_code = 503
+    return HealthResponse(status="ok" if healthy else "degraded", database=db_status, redis=redis_status)
 
 
 @router.get("/health/stats")

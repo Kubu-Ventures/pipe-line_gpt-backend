@@ -79,10 +79,14 @@ Set the following values in `.env`:
 
 | Variable | Description | Default |
 |---|---|---|
+| `ENVIRONMENT` | `development`, `test`, or `production` (production enforces strong secrets, hides `/docs`, sends HSTS) | `development` |
+| `DEMO_MODE` | Demo deployments only: sample-data loader, `seed_demo.py`, demo-account MFA bypass | `false` |
+| `CORS_ORIGINS` | Comma-separated frontend origins | localhost:3000, pipelinegpt.xyz |
+| `LOGIN_MAX_FAILURES` / `LOGIN_LOCKOUT_SECONDS` | Brute-force lockout per email (4x per IP) | `5` / `900` |
 | `DATABASE_URL` | asyncpg connection string | `postgresql+asyncpg://pipelinegpt:pipelinegpt@localhost:5432/pipelinegpt` |
 | `REDIS_URL` | Redis connection string | `redis://localhost:6379/0` |
 | `ANTHROPIC_API_KEY` | Anthropic API key | _(required)_ |
-| `JWT_SECRET` | Secret used to sign JWT tokens | _(required -- use a long random string)_ |
+| `JWT_SECRET` | Secret used to sign JWT tokens | _(required -- 32+ random characters; production refuses to start otherwise)_ |
 | `JWT_ALGORITHM` | JWT signing algorithm | `HS256` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Token lifetime | `480` |
 | `LLM_MODEL` | Claude model ID | `claude-sonnet-4-6` |
@@ -101,8 +105,10 @@ alembic -c alembic/alembic.ini upgrade head
 ### 5. Create the first admin user
 
 ```bash
-python create_admin.py
+python create_admin.py admin@yourcompany.com   # prompts for a password (12+ characters)
 ```
+
+The admin enrolls TOTP (any authenticator app) at first sign-in. For a public demo instance only, `DEMO_MODE=true python seed_demo.py` creates the demo accounts.
 
 ### 6. Start the API server
 
@@ -162,6 +168,13 @@ The final event sets `"done": true` and includes the full `citations` array:
   "done": true
 }
 ```
+
+## Security model
+
+- **MFA:** Engineers and admins must enroll TOTP. Until they do, their session can only reach the enrollment screen. Enrolled users need a code at every sign-in, and codes are single-use. Admins can reset a user's MFA if they lose their device.
+- **HITL hold:** Every answer is generated and risk-classified server-side before any text reaches the operator. Flagged answers are withheld until an engineer approves or edits them, rejected answers are never shown, and only delivered answers are cached.
+- **Sessions:** Suspended users are cut off on their next request. Failed sign-ins lock the account (and IP) for 15 minutes after repeated attempts, and are audited.
+- **Audit export:** The CSV export is protected against spreadsheet formula injection.
 
 ## User roles
 

@@ -118,3 +118,110 @@ async def test_worker_ingests_csv(make_user, db_session, monkeypatch):
     assert doc.status == "COMPLETED"
     assert doc.chunk_count == result["chunk_count"] > 0
     assert doc.insights_json == {"doc_type": "ILI_REPORT"}
+
+
+# ── Hardening ────────────────────────────────────────────────────────────────
+
+
+async def test_status_requires_auth(client):
+    assert (await client.get("/ingest/status/some-task")).status_code == 401
+
+
+async def test_unknown_extension_rejected(client, make_user, dispatched):
+    operator = await make_user("OPERATOR")
+    resp = await upload(
+        client, operator, content=b"hello", filename="notes.docx", content_type="application/octet-stream"
+    )
+    assert resp.status_code == 415
+    assert dispatched == []
+
+
+async def test_fake_pdf_rejected(client, make_user, dispatched):
+    operator = await make_user("OPERATOR")
+    resp = await upload(client, operator, content=b"not a pdf", filename="report.pdf", content_type="application/pdf")
+    assert resp.status_code == 415
+
+
+async def test_empty_upload_rejected(client, make_user, dispatched):
+    operator = await make_user("OPERATOR")
+    assert (await upload(client, operator, content=b"")).status_code == 400
+
+
+async def test_demo_sync_disabled_outside_demo_mode(client, make_user):
+    operator = await make_user("OPERATOR")
+    assert (await client.post("/ingest/phmsa-sync", headers=auth_headers(operator))).status_code == 404
+
+
+async def test_worker_retry_does_not_duplicate_chunks(db_session, monkeypatch):
+    from app.tasks.celery_app import _ingest_async
+
+    async def fake_embed(texts):
+        return [[0.1] * 384 for _ in texts]
+
+    monkeypatch.setattr("app.services.embedder.embed_texts", fake_embed)
+    monkeypatch.setattr("app.services.insights.extract_document_insights", _no_insights)
+
+    doc = Document(id=uuid.uuid4(), filename="ili.csv", source_type="csv", sha256_hash="d" * 64, status="PENDING")
+    db_session.add(doc)
+    await db_session.commit()
+
+    first = await _ingest_async(str(doc.id), "csv", "ili.csv", CSV)
+    await _ingest_async(str(doc.id), "csv", "ili.csv", CSV)  # e.g. redelivered after worker loss
+
+    count = (await db_session.execute(select(func.count()).select_from(Chunk))).scalar_one()
+    assert count == first["chunk_count"]
+
+
+async def test_worker_parse_failure_marks_failed(db_session, monkeypatch):
+    from app.tasks.celery_app import DocumentParseError, _ingest_async
+
+    doc = Document(id=uuid.uuid4(), filename="bad.pdf", source_type="pdf", sha256_hash="e" * 64, status="PENDING")
+    doc_id = doc.id
+    db_session.add(doc)
+    await db_session.commit()
+
+    with pytest.raises(DocumentParseError):
+        await _ingest_async(str(doc_id), "pdf", "bad.pdf", b"%PDF-garbage")
+
+    doc = await db_session.get(Document, doc_id, populate_existing=True)
+    assert doc.status == "FAILED"
+    audit = (await db_session.execute(select(AuditEvent.event_type))).scalars().all()
+    assert "INGEST_FAILED" in audit
+
+
+async def test_worker_runs_in_separate_event_loops(db_session, monkeypatch):
+    """Celery calls asyncio.run per task; a second task must not reuse the first loop's connections."""
+    import asyncio
+    import threading
+
+    from app.tasks.celery_app import _ingest_async
+
+    async def fake_embed(texts):
+        return [[0.1] * 384 for _ in texts]
+
+    monkeypatch.setattr("app.services.embedder.embed_texts", fake_embed)
+    monkeypatch.setattr("app.services.insights.extract_document_insights", _no_insights)
+
+    ids = []
+    for letter in "fg":
+        doc = Document(
+            id=uuid.uuid4(), filename=f"{letter}.csv", source_type="csv", sha256_hash=letter * 64, status="PENDING"
+        )
+        db_session.add(doc)
+        ids.append(str(doc.id))
+    await db_session.commit()
+
+    results: list[dict] = []
+
+    def run_like_celery():
+        for doc_id in ids:
+            results.append(asyncio.run(_ingest_async(doc_id, "csv", "x.csv", CSV)))
+
+    thread = threading.Thread(target=run_like_celery)
+    thread.start()
+    await asyncio.to_thread(thread.join)
+    assert [r["status"] for r in results] == ["COMPLETED", "COMPLETED"]
+
+
+async def _no_insights(_filename, _chunks):
+    return {}
