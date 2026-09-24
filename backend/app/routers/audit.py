@@ -7,8 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.middleware.auth import RequireEngineer, get_db
@@ -29,18 +28,18 @@ ADMIN_ONLY_EVENT_TYPES = {
 # Per-event-type metadata used in the CSV export
 # (category, human label, regulatory reference)
 _EVENT_META: dict[str, tuple[str, str, str]] = {
-    "HITL_APPROVED":         ("Engineer Decision",   "HITL Approval",           "49 CFR §192.911 / ASME B31.8S §6"),
-    "HITL_REJECTED":         ("Engineer Decision",   "HITL Rejection",          "49 CFR §192.911 / ASME B31.8S §6"),
-    "HITL_EDITED":           ("Engineer Decision",   "HITL Edit & Approval",    "49 CFR §192.911 / ASME B31.8S §6"),
-    "ANOMALY_ESCALATED":     ("Integrity Alert",     "Anomaly Escalation",      "ASME B31.8S §4 / 49 CFR §192.933"),
-    "COMPLIANCE_FLAG":       ("Compliance Alert",    "IMP Deadline Flag",       "49 CFR §192.945 / §192.947"),
-    "QUERY_COMPLETED":       ("AI Query",            "Query Answered",          "49 CFR §192.911"),
-    "INGEST_COMPLETED":      ("Document Management", "Document Ingested",       "49 CFR §192.911 (records)"),
-    "USER_LOGIN":            ("Security",            "User Login",              "49 CFR §192.911 (access control)"),
-    "USER_INVITED":          ("Security",            "Invitation Sent",         "49 CFR §192.911 (access control)"),
-    "USER_INVITED_ACCEPTED": ("Security",            "Invitation Accepted",     "49 CFR §192.911 (access control)"),
-    "USER_MFA_ENROLLED":     ("Security",            "MFA Enrolled",            "49 CFR §192.911 (access control)"),
-    "CONFIG_CHANGE":         ("System",              "Configuration Changed",   "49 CFR §192.911"),
+    "HITL_APPROVED": ("Engineer Decision", "HITL Approval", "49 CFR §192.911 / ASME B31.8S §6"),
+    "HITL_REJECTED": ("Engineer Decision", "HITL Rejection", "49 CFR §192.911 / ASME B31.8S §6"),
+    "HITL_EDITED": ("Engineer Decision", "HITL Edit & Approval", "49 CFR §192.911 / ASME B31.8S §6"),
+    "ANOMALY_ESCALATED": ("Integrity Alert", "Anomaly Escalation", "ASME B31.8S §4 / 49 CFR §192.933"),
+    "COMPLIANCE_FLAG": ("Compliance Alert", "IMP Deadline Flag", "49 CFR §192.945 / §192.947"),
+    "QUERY_COMPLETED": ("AI Query", "Query Answered", "49 CFR §192.911"),
+    "INGEST_COMPLETED": ("Document Management", "Document Ingested", "49 CFR §192.911 (records)"),
+    "USER_LOGIN": ("Security", "User Login", "49 CFR §192.911 (access control)"),
+    "USER_INVITED": ("Security", "Invitation Sent", "49 CFR §192.911 (access control)"),
+    "USER_INVITED_ACCEPTED": ("Security", "Invitation Accepted", "49 CFR §192.911 (access control)"),
+    "USER_MFA_ENROLLED": ("Security", "MFA Enrolled", "49 CFR §192.911 (access control)"),
+    "CONFIG_CHANGE": ("System", "Configuration Changed", "49 CFR §192.911"),
 }
 
 
@@ -63,12 +62,7 @@ def _derive_csv_row(
 
     actor = p.get("email") or actor_email or str(e.actor_id or "system")
 
-    segment = (
-        p.get("segment")
-        or p.get("filename")
-        or p.get("obligation")
-        or "—"
-    )
+    segment = p.get("segment") or p.get("filename") or p.get("obligation") or "—"
 
     conf_raw = p.get("confidence")
     confidence = f"{round(float(conf_raw) * 100, 1)}%" if conf_raw is not None else "—"
@@ -84,7 +78,9 @@ def _derive_csv_row(
         decision = p.get("final_action") or "Edited and approved"
     elif etype == "ANOMALY_ESCALATED":
         wl = p.get("wall_loss")
-        decision = p.get("action_required") or (f"{wl}% wall loss exceeds {p.get('threshold', 40)}% threshold" if wl else "—")
+        decision = p.get("action_required") or (
+            f"{wl}% wall loss exceeds {p.get('threshold', 40)}% threshold" if wl else "—"
+        )
     elif etype == "COMPLIANCE_FLAG":
         decision = f"Due {p.get('due_date', '—')} — {p.get('days_remaining', '—')} days remaining"
     elif etype == "QUERY_COMPLETED":
@@ -99,13 +95,7 @@ def _derive_csv_row(
     else:
         decision = "—"
 
-    notes = (
-        p.get("engineer_note")
-        or p.get("question_summary")
-        or p.get("anomaly")
-        or p.get("change_summary")
-        or ""
-    )
+    notes = p.get("engineer_note") or p.get("question_summary") or p.get("anomaly") or p.get("change_summary") or ""
 
     return [
         str(e.id),
@@ -137,9 +127,7 @@ async def list_audit_events(
 
     # Engineers cannot see identity / security events
     if user.role == "ENGINEER":
-        base_stmt = base_stmt.where(
-            AuditEvent.event_type.not_in(ADMIN_ONLY_EVENT_TYPES)
-        )
+        base_stmt = base_stmt.where(AuditEvent.event_type.not_in(ADMIN_ONLY_EVENT_TYPES))
 
     # Caller-supplied filters
     if event_type:
@@ -192,41 +180,35 @@ async def export_audit_csv(
     events = result.scalars().all()
 
     # Bulk-resolve actor UUIDs → emails to avoid N+1 queries
-    actor_uuids = {
-        uuid.UUID(e.actor_id)
-        for e in events
-        if e.actor_id and _is_valid_uuid(e.actor_id)
-    }
+    actor_uuids = {uuid.UUID(e.actor_id) for e in events if e.actor_id and _is_valid_uuid(e.actor_id)}
     actor_emails: dict[str, str] = {}
     if actor_uuids:
-        rows = await db.execute(
-            select(User.id, User.email).where(User.id.in_(actor_uuids))
-        )
+        rows = await db.execute(select(User.id, User.email).where(User.id.in_(actor_uuids)))
         for uid, email in rows:
             actor_emails[str(uid)] = email
 
     # Build CSV in memory — audit logs are bounded in size
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow([
-        "Event ID",
-        "Timestamp (UTC)",
-        "Category",
-        "Event Type",
-        "Actor",
-        "Segment / Context",
-        "AI Confidence",
-        "Risk Level",
-        "Decision / Outcome",
-        "Regulatory Reference",
-        "IP Address",
-        "Notes",
-    ])
+    writer.writerow(
+        [
+            "Event ID",
+            "Timestamp (UTC)",
+            "Category",
+            "Event Type",
+            "Actor",
+            "Segment / Context",
+            "AI Confidence",
+            "Risk Level",
+            "Decision / Outcome",
+            "Regulatory Reference",
+            "IP Address",
+            "Notes",
+        ]
+    )
 
     for e in events:
-        category, label, reg_ref = _EVENT_META.get(
-            e.event_type, ("Unknown", e.event_type, "—")
-        )
+        category, label, reg_ref = _EVENT_META.get(e.event_type, ("Unknown", e.event_type, "—"))
         actor_email = actor_emails.get(str(e.actor_id), "")
         writer.writerow(_derive_csv_row(e, actor_email, category, label, reg_ref))
 

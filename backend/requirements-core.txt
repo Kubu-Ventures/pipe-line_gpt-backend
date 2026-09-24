@@ -1,3 +1,6 @@
+# Lean runtime install: everything except the optional heavy extras
+# (presidio PII scrubbing, sentence-transformers reranker). The app degrades
+# gracefully without them. Full install: pip install -e .
 fastapi[standard]>=0.115
 sqlalchemy[asyncio]>=2.0
 asyncpg
@@ -5,14 +8,15 @@ pgvector
 anthropic>=0.40
 pydantic-settings>=2.0
 celery[redis]
+flower
+pdfplumber
+fastembed>=0.3
 httpx
 prometheus-fastapi-instrumentator
 python-jose[cryptography]
-passlib[bcrypt]
-bcrypt==4.0.1
+bcrypt>=4.0
 python-multipart
 langdetect
 redis
 alembic
-openai
 pyotp

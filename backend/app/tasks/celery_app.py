@@ -4,6 +4,7 @@ import asyncio
 import uuid
 
 from celery import Celery
+
 from app.config import settings
 
 celery_app = Celery(
@@ -21,7 +22,6 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_acks_late=True,
 )
-
 
 
 @celery_app.task(bind=True, name="tasks.ingest_document", max_retries=3)
@@ -42,7 +42,7 @@ def ingest_document_task(
     try:
         return asyncio.run(_ingest_async(document_id, source_type, filename, content))
     except Exception as exc:
-        raise self.retry(exc=exc, countdown=30)
+        raise self.retry(exc=exc, countdown=30) from exc
 
 
 _engine = None
@@ -54,6 +54,7 @@ def _get_session_factory():
     if _AsyncSessionLocal is None:
         from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
         from sqlalchemy.orm import sessionmaker
+
         _engine = create_async_engine(settings.database_url, echo=False, pool_size=2, max_overflow=2)
         _AsyncSessionLocal = sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
     return _AsyncSessionLocal
@@ -92,7 +93,7 @@ async def _ingest_async(
             elif source_type == "phmsa_zip":
                 all_results = load_phmsa_zip(content)
                 raw_chunks = []
-                for chunks, meta, _ in all_results:
+                for chunks, _meta, _ in all_results:
                     raw_chunks.extend(chunks)
                 meta = {"source_type": "phmsa"}
             else:
@@ -121,7 +122,7 @@ async def _ingest_async(
                 embeddings.extend(batch_embeddings)
 
             # Persist chunks
-            for raw_chunk, embedding in zip(raw_chunks, embeddings):
+            for raw_chunk, embedding in zip(raw_chunks, embeddings, strict=True):
                 chunk = Chunk(
                     id=uuid.uuid4(),
                     document_id=doc.id,
@@ -140,6 +141,7 @@ async def _ingest_async(
             # Extract structured intelligence from the document
             try:
                 from app.services.insights import extract_document_insights
+
                 doc.insights_json = await extract_document_insights(filename, raw_chunks) or {}
             except Exception:
                 doc.insights_json = {}

@@ -11,20 +11,17 @@ Demo credentials:
     demo-engineer@pipelinegpt.xyz / DemoEng2026!  (ENGINEER, MFA pre-enrolled)
     demo-admin@pipelinegpt.xyz    / DemoAdmin2026! (ADMIN,    MFA pre-enrolled)
 """
+
 from __future__ import annotations
 
 import asyncio
 import uuid
 
-import bcrypt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-DATABASE_URL = "postgresql+asyncpg://pipelinegpt:pipelinegpt@db:5432/pipelinegpt"
-
-
-def _hash(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(12)).decode("utf-8")
+from app.config import settings
+from app.middleware.auth import hash_password as _hash
 
 DEMO_ACCOUNTS = [
     {
@@ -49,7 +46,7 @@ DEMO_ACCOUNTS = [
 
 
 async def seed() -> None:
-    engine = create_async_engine(DATABASE_URL, echo=False)
+    engine = create_async_engine(settings.database_url, echo=False)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     # Import here to avoid circular imports when run standalone

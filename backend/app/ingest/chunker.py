@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-CHUNK_SIZE = 400      # target tokens per chunk
-CHUNK_OVERLAP = 50    # overlap tokens between adjacent chunks
+CHUNK_SIZE = 400  # target tokens per chunk
+CHUNK_OVERLAP = 50  # overlap tokens between adjacent chunks
 
 
 def _approx_tokens(text: str) -> int:

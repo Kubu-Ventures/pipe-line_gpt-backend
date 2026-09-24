@@ -12,7 +12,6 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSON, UUID
@@ -174,9 +173,7 @@ class Response(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
 
     query: Mapped["Query"] = relationship("Query", back_populates="response")
-    hitl_review: Mapped["HITLReview | None"] = relationship(
-        "HITLReview", back_populates="response", uselist=False
-    )
+    hitl_review: Mapped["HITLReview | None"] = relationship("HITLReview", back_populates="response", uselist=False)
 
 
 class HITLReview(Base):
@@ -186,12 +183,8 @@ class HITLReview(Base):
     response_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("responses.id", ondelete="CASCADE"), nullable=False, unique=True
     )
-    reviewer_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
-    )
-    decision: Mapped[str | None] = mapped_column(
-        Enum("APPROVE", "EDIT", "REJECT", name="hitl_decision"), nullable=True
-    )
+    reviewer_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    decision: Mapped[str | None] = mapped_column(Enum("APPROVE", "EDIT", "REJECT", name="hitl_decision"), nullable=True)
     original_text: Mapped[str] = mapped_column(Text, nullable=False)
     final_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)

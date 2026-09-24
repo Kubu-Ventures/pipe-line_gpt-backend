@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Annotated
 
@@ -8,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.middleware.auth import RequireEngineer, get_db, get_current_user
+from app.middleware.auth import RequireEngineer, get_db
 from app.models.db import HITLReview, Query, Response, User
 from app.models.schemas import (
     Citation,
@@ -20,6 +21,7 @@ from app.services import audit_log
 from app.services.hitl import submit_review_decision
 
 router = APIRouter(prefix="/review", tags=["review"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("", response_model=list[ReviewQueueItem])
@@ -35,9 +37,7 @@ async def get_review_queue(
 
     stmt = (
         select(HITLReview)
-        .options(
-            selectinload(HITLReview.response).selectinload(Response.query)
-        )
+        .options(selectinload(HITLReview.response).selectinload(Response.query))
         .order_by(HITLReview.id.asc())
         .offset(offset)
         .limit(page_size)
@@ -63,7 +63,7 @@ async def get_review_queue(
                 try:
                     citations.append(Citation(**c))
                 except Exception:
-                    pass
+                    logger.warning("Skipping malformed citation on review %s", review.id, exc_info=True)
 
         conf = response.confidence_score if response else 0.0
         if conf >= 0.7:
@@ -132,9 +132,7 @@ async def submit_decision(
         .join(Response, HITLReview.response_id == Response.id)
         .join(Query, Response.query_id == Query.id)
         .where(Query.id == uuid.UUID(query_id))
-        .options(
-            selectinload(HITLReview.response).selectinload(Response.query)
-        )
+        .options(selectinload(HITLReview.response).selectinload(Response.query))
     )
     result = await db.execute(stmt)
     review = result.scalar_one_or_none()
