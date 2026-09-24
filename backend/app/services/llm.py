@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import anthropic
 
@@ -120,10 +120,7 @@ async def stream_answer(
             "Only keep source citation tags (e.g. [SRC-001]) in their original format."
         )
 
-    user_message = (
-        f"RETRIEVED CONTEXT:\n{context_block}\n\n"
-        f"USER QUESTION: {question}{lang_instruction}"
-    )
+    user_message = f"RETRIEVED CONTEXT:\n{context_block}\n\nUSER QUESTION: {question}{lang_instruction}"
 
     async with client.messages.stream(
         model=settings.llm_model,

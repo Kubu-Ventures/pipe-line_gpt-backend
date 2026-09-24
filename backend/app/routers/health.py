@@ -45,9 +45,9 @@ async def health_stats(
     total_users = (await db.execute(select(func.count()).select_from(User))).scalar_one()
     total_documents = (await db.execute(select(func.count()).select_from(Document))).scalar_one()
     total_queries = (await db.execute(select(func.count()).select_from(Query))).scalar_one()
-    pending_reviews = (await db.execute(
-        select(func.count()).select_from(HITLReview).where(HITLReview.decision.is_(None))
-    )).scalar_one()
+    pending_reviews = (
+        await db.execute(select(func.count()).select_from(HITLReview).where(HITLReview.decision.is_(None)))
+    ).scalar_one()
     total_audit_events = (await db.execute(select(func.count()).select_from(AuditEvent))).scalar_one()
     avg_conf_raw = (await db.execute(select(func.avg(Response.confidence_score)))).scalar_one()
     avg_confidence_pct = round(float(avg_conf_raw) * 100, 1) if avg_conf_raw else 0.0
@@ -79,9 +79,7 @@ async def dashboard_insights(
 
     # Lazily fill insights for docs that don't have them yet (up to 3 per call)
     missing_result = await db.execute(
-        select(Document)
-        .where(Document.status == "COMPLETED", Document.insights_json.is_(None))
-        .limit(3)
+        select(Document).where(Document.status == "COMPLETED", Document.insights_json.is_(None)).limit(3)
     )
     for doc in missing_result.scalars().all():
         chunks_result = await db.execute(
@@ -109,37 +107,43 @@ async def dashboard_insights(
         ins: dict = doc.insights_json or {}
 
         for d in ins.get("deadlines", []):
-            attention_items.append({
-                "type": "deadline",
-                "severity": d.get("status", "UPCOMING"),
-                "segment": d.get("segment"),
-                "item": d.get("item"),
-                "date": d.get("date"),
-                "days_until": d.get("days_until"),
-                "source": doc.filename,
-            })
+            attention_items.append(
+                {
+                    "type": "deadline",
+                    "severity": d.get("status", "UPCOMING"),
+                    "segment": d.get("segment"),
+                    "item": d.get("item"),
+                    "date": d.get("date"),
+                    "days_until": d.get("days_until"),
+                    "source": doc.filename,
+                }
+            )
 
         for a in ins.get("anomalies", []):
-            attention_items.append({
-                "type": "anomaly",
-                "severity": a.get("severity", "LOW"),
-                "segment": a.get("segment"),
-                "item": a.get("feature"),
-                "detail": a.get("detail"),
-                "action_required": a.get("action_required", False),
-                "source": doc.filename,
-            })
+            attention_items.append(
+                {
+                    "type": "anomaly",
+                    "severity": a.get("severity", "LOW"),
+                    "segment": a.get("segment"),
+                    "item": a.get("feature"),
+                    "detail": a.get("detail"),
+                    "action_required": a.get("action_required", False),
+                    "source": doc.filename,
+                }
+            )
 
         for al in ins.get("alarms", []):
-            attention_items.append({
-                "type": "alarm",
-                "severity": "HIGH",
-                "segment": al.get("location"),
-                "item": f"{al.get('tag', 'Alarm')}",
-                "detail": al.get("description"),
-                "date": al.get("date"),
-                "source": doc.filename,
-            })
+            attention_items.append(
+                {
+                    "type": "alarm",
+                    "severity": "HIGH",
+                    "segment": al.get("location"),
+                    "item": f"{al.get('tag', 'Alarm')}",
+                    "detail": al.get("description"),
+                    "date": al.get("date"),
+                    "source": doc.filename,
+                }
+            )
 
         for q in ins.get("suggested_queries", []):
             if q and q not in seen_queries:
@@ -147,11 +151,13 @@ async def dashboard_insights(
                 suggested_queries.append(q)
 
         if ins.get("summary"):
-            doc_summaries.append({
-                "filename": doc.filename,
-                "doc_type": ins.get("doc_type", "OTHER"),
-                "summary": ins.get("summary"),
-            })
+            doc_summaries.append(
+                {
+                    "filename": doc.filename,
+                    "doc_type": ins.get("doc_type", "OTHER"),
+                    "summary": ins.get("summary"),
+                }
+            )
 
     attention_items.sort(key=lambda x: _SEVERITY_ORDER.get(x.get("severity", "LOW"), 10))
 
@@ -160,18 +166,16 @@ async def dashboard_insights(
     query_trend = []
     for i in range(6, -1, -1):
         day = today_utc - timedelta(days=i)
-        count = (await db.execute(
-            select(func.count()).select_from(Query).where(
-                func.date(Query.query_ts) == day
-            )
-        )).scalar_one()
+        count = (
+            await db.execute(select(func.count()).select_from(Query).where(func.date(Query.query_ts) == day))
+        ).scalar_one()
         query_trend.append({"date": day.isoformat(), "queries": count})
 
     # Confidence distribution
     all_conf = (await db.execute(select(Response.confidence_score))).scalars().all()
-    conf_high   = sum(1 for c in all_conf if c >= 0.75)
+    conf_high = sum(1 for c in all_conf if c >= 0.75)
     conf_medium = sum(1 for c in all_conf if 0.40 <= c < 0.75)
-    conf_low    = sum(1 for c in all_conf if c < 0.40)
+    conf_low = sum(1 for c in all_conf if c < 0.40)
 
     return {
         "attention_items": attention_items[:20],
@@ -191,6 +195,7 @@ async def refresh_insights(
     """Re-run insight extraction for ALL completed documents. Engineer/Admin only."""
     if current_user.role not in ("ENGINEER", "ADMIN"):
         from fastapi import HTTPException
+
         raise HTTPException(status_code=403, detail="Engineer or Admin required")
 
     from app.services.insights import extract_document_insights

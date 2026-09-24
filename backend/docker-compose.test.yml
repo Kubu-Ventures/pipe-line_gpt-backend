@@ -1,0 +1,29 @@
+# Throwaway Postgres+pgvector and Redis for the integration test suite.
+# Data lives in tmpfs and durability is off: fast, and never mistaken for real data.
+services:
+  test-db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: pipelinegpt_test
+      POSTGRES_USER: pipelinegpt
+      POSTGRES_PASSWORD: pipelinegpt
+    command: postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pipelinegpt -d pipelinegpt_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  test-redis:
+    image: redis:7-alpine
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20

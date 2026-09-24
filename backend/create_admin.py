@@ -7,23 +7,22 @@ Usage:
 The admin is created with status=ACTIVE and mfa_enabled=True (pre-enrolled).
 Subsequent admins should be created through the /admin/invite endpoint.
 """
+
 from __future__ import annotations
 
 import asyncio
 import sys
 import uuid
 
-from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-DATABASE_URL = "postgresql+asyncpg://pipelinegpt:pipelinegpt@localhost:5432/pipelinegpt"
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+from app.config import settings
+from app.middleware.auth import hash_password
 
 
 async def create_admin(email: str, password: str) -> None:
-    engine = create_async_engine(DATABASE_URL, echo=False)
+    engine = create_async_engine(settings.database_url, echo=False)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     from app.models.db import User  # noqa: PLC0415
@@ -38,7 +37,7 @@ async def create_admin(email: str, password: str) -> None:
         user = User(
             id=uuid.uuid4(),
             email=email.lower(),
-            hashed_password=pwd_context.hash(password),
+            hashed_password=hash_password(password),
             role="ADMIN",
             status="ACTIVE",
             mfa_enabled=True,

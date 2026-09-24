@@ -1,0 +1,7 @@
+# CI / lean dev install: core runtime + test and lint tooling (no torch).
+-r requirements-core.txt
+pytest>=8
+pytest-asyncio>=0.24
+pytest-cov
+ruff>=0.6
+mypy

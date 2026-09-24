@@ -41,10 +41,7 @@ def _row_to_text(row: dict) -> str:
     operator = mapped.pop("operator_name", mapped.pop("operator_id", ""))
 
     location = ", ".join(filter(None, [city, state]))
-    incident_summary = (
-        f"PHMSA Incident [{year}]: Operator: {operator}. "
-        f"Location: {location}. Cause: {cause}"
-    )
+    incident_summary = f"PHMSA Incident [{year}]: Operator: {operator}. Location: {location}. Cause: {cause}"
     if subcause:
         incident_summary += f" ({subcause})"
     incident_summary += f". Fatalities: {fatalities}. Injuries: {injuries}."
@@ -88,9 +85,8 @@ def load_phmsa_tsv(content: bytes, filename: str) -> tuple[list[dict], dict]:
         metadata["commodity"] = commodities[0]
 
     all_chunks: list[dict] = []
-    fatality_rows: list[str] = []
 
-    for i, row in enumerate(rows):
+    for row in rows:
         text = _row_to_text(row)
         fatal = row.get("FATAL", "0")
         injure = row.get("INJURE", "0")

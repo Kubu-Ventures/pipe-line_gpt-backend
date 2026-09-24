@@ -14,14 +14,12 @@ dependencies = [
     "anthropic>=0.40",
     "pydantic-settings>=2.0",
     "celery[redis]",
+    "flower",
     "pdfplumber",
-    "pypdf2",
-    "shapely",
-    "fiona",
     "httpx",
     "prometheus-fastapi-instrumentator",
     "python-jose[cryptography]",
-    "passlib[bcrypt]",
+    "bcrypt>=4.0",
     "python-multipart",
     "langdetect",
     "presidio-analyzer",
@@ -30,17 +28,16 @@ dependencies = [
     "sentence-transformers",
     "redis",
     "alembic",
-    "pytest",
-    "pytest-asyncio",
-    "openai",
     "pyotp",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
-    "pytest-asyncio",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-cov",
     "httpx",
+    "ruff>=0.6",
     "mypy",
 ]
 
@@ -49,6 +46,37 @@ packages = ["app"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+markers = [
+    "integration: requires live Postgres (pgvector) and Redis; run with TEST_DATABASE_URL set",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["app"]
+concurrency = ["greenlet", "thread"]
+
+[tool.coverage.report]
+fail_under = 75
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "S"]
+ignore = [
+    "B008",   # FastAPI Depends() in defaults is idiomatic
+    "S101",   # assert is fine in tests
+    "E501",   # line length handled by formatter
+    "UP042",  # str+Enum -> StrEnum changes str() output; not worth the risk
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "B"]
 
 [tool.mypy]
 python_version = "3.12"

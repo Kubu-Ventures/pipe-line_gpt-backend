@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import uuid
-
-from pgvector.sqlalchemy import Vector
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -93,7 +90,7 @@ def rerank_chunks(query: str, chunks: list[dict], top_k: int | None = None) -> l
         model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
         pairs = [(query, c["text_content"]) for c in chunks]
         scores = model.predict(pairs)
-        ranked = sorted(zip(scores, chunks), key=lambda x: x[0], reverse=True)
+        ranked = sorted(zip(scores, chunks, strict=True), key=lambda x: x[0], reverse=True)
         return [c for _, c in ranked[:k]]
     except Exception:
         # Graceful fallback to similarity score ordering if cross-encoder unavailable
