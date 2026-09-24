@@ -46,6 +46,7 @@ class QueryStatus(str, PyEnum):
     UNDER_REVIEW = "UNDER_REVIEW"
     DELIVERED = "DELIVERED"
     REJECTED = "REJECTED"
+    FAILED = "FAILED"
 
 
 class DocumentStatus(str, PyEnum):
@@ -149,7 +150,7 @@ class Query(Base):
     query_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     hitl_required: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(
-        Enum("PENDING", "PROCESSING", "UNDER_REVIEW", "DELIVERED", "REJECTED", name="query_status"),
+        Enum("PENDING", "PROCESSING", "UNDER_REVIEW", "DELIVERED", "REJECTED", "FAILED", name="query_status"),
         default="PENDING",
     )
 
@@ -167,6 +168,8 @@ class Response(Base):
     answer_text: Mapped[str] = mapped_column(Text, nullable=False)
     citations_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     confidence_score: Mapped[float] = mapped_column(Float, default=1.0)
+    # HIGH | MEDIUM | LOW from hitl.classify_risk; NULL on rows created before 0005.
+    risk_level: Mapped[str | None] = mapped_column(String(10), nullable=True)
     model_version: Mapped[str] = mapped_column(String(100), nullable=False)
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)

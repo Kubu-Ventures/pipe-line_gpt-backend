@@ -2,7 +2,7 @@
 Seed demo accounts for PipelineGPT.
 
 Usage:
-    python seed_demo.py
+    DEMO_MODE=true python seed_demo.py
 
 Idempotent — safe to run multiple times. Skips accounts that already exist.
 
@@ -83,4 +83,8 @@ async def seed() -> None:
 
 
 if __name__ == "__main__":
+    if not settings.demo_mode:
+        # These accounts have public passwords and skip MFA; never seed them into a real deployment.
+        print("Refusing to seed demo accounts: set DEMO_MODE=true (demo deployments only).")
+        raise SystemExit(1)
     asyncio.run(seed())

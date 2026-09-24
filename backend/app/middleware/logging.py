@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
+
+logger = logging.getLogger("pipelinegpt.access")
 
 
 class StructuredLoggingMiddleware(BaseHTTPMiddleware):
@@ -24,6 +27,6 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
             "duration_ms": duration_ms,
             "client_ip": request.client.host if request.client else None,
         }
-        print(json.dumps(log_entry))
+        logger.info(json.dumps(log_entry))
         response.headers["X-Request-ID"] = request_id
         return response

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import logging
 import uuid
 
 from celery import Celery
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 celery_app = Celery(
     "pipelinegpt",
@@ -21,7 +25,17 @@ celery_app.conf.update(
     enable_utc=True,
     worker_prefetch_multiplier=1,
     task_acks_late=True,
+    # Re-queue work from a worker that dies mid-task instead of losing it.
+    task_reject_on_worker_lost=True,
+    # Large PDFs embed on CPU; bound runaway tasks.
+    task_soft_time_limit=1800,
+    task_time_limit=1900,
+    result_expires=86_400,
 )
+
+
+class DocumentParseError(Exception):
+    """The file itself can't be processed; retrying won't help."""
 
 
 @celery_app.task(bind=True, name="tasks.ingest_document", max_retries=3)
@@ -36,28 +50,35 @@ def ingest_document_task(
     Process and embed a document asynchronously.
     Accepts content as base64-encoded string to survive Celery JSON serialisation.
     """
-    import base64
-
     content = base64.b64decode(content_b64)
     try:
         return asyncio.run(_ingest_async(document_id, source_type, filename, content))
+    except DocumentParseError as exc:
+        return {"document_id": document_id, "status": "FAILED", "error": str(exc)}
     except Exception as exc:
-        raise self.retry(exc=exc, countdown=30) from exc
+        raise self.retry(exc=exc, countdown=30 * (2**self.request.retries)) from exc
 
 
-_engine = None
-_AsyncSessionLocal = None
+def _parse(source_type: str, filename: str, content: bytes) -> tuple[list[dict], dict]:
+    from app.ingest.csv_loader import load_csv
+    from app.ingest.pdf_loader import load_pdf
+    from app.ingest.phmsa_loader import load_phmsa_tsv, load_phmsa_zip
 
-
-def _get_session_factory():
-    global _engine, _AsyncSessionLocal
-    if _AsyncSessionLocal is None:
-        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-        from sqlalchemy.orm import sessionmaker
-
-        _engine = create_async_engine(settings.database_url, echo=False, pool_size=2, max_overflow=2)
-        _AsyncSessionLocal = sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
-    return _AsyncSessionLocal
+    try:
+        if source_type == "pdf":
+            return load_pdf(content, filename)
+        if source_type == "csv":
+            return load_csv(content, filename)
+        if source_type == "phmsa_zip":
+            raw_chunks: list[dict] = []
+            for chunks, _meta, _ in load_phmsa_zip(content):
+                raw_chunks.extend(chunks)
+            for idx, chunk in enumerate(raw_chunks):
+                chunk["chunk_index"] = idx
+            return raw_chunks, {"source_type": "phmsa"}
+        return load_phmsa_tsv(content, filename)
+    except Exception as exc:
+        raise DocumentParseError(f"Could not parse {filename}: {type(exc).__name__}") from exc
 
 
 async def _ingest_async(
@@ -66,91 +87,102 @@ async def _ingest_async(
     filename: str,
     content: bytes,
 ) -> dict:
-    from app.ingest.csv_loader import load_csv
-    from app.ingest.pdf_loader import load_pdf
-    from app.ingest.phmsa_loader import load_phmsa_tsv, load_phmsa_zip
+    import redis.asyncio as aioredis
+    from sqlalchemy import delete, select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
     from app.models.db import Chunk, Document
+    from app.services import audit_log, semantic_cache
     from app.services.embedder import embed_texts
 
-    AsyncSessionLocal = _get_session_factory()
+    # Each Celery task runs in a fresh event loop (asyncio.run), so connections must not
+    # outlive it: a per-task engine without pooling, disposed at the end.
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    doc_uuid = uuid.UUID(document_id)
 
-    async with AsyncSessionLocal() as db:
-        from sqlalchemy import select
+    try:
+        async with session_factory() as db:
+            doc = (await db.execute(select(Document).where(Document.id == doc_uuid))).scalar_one_or_none()
+            if not doc:
+                return {"error": "Document not found"}
 
-        result = await db.execute(select(Document).where(Document.id == uuid.UUID(document_id)))
-        doc = result.scalar_one_or_none()
-        if not doc:
-            return {"error": "Document not found"}
+            doc.status = "PROCESSING"
+            # A retry starts clean: drop chunks a previous attempt may have written.
+            await db.execute(delete(Chunk).where(Chunk.document_id == doc_uuid))
+            await db.commit()
 
-        doc.status = "PROCESSING"
-        await db.commit()
-
-        try:
-            if source_type == "pdf":
-                raw_chunks, meta = load_pdf(content, filename)
-            elif source_type == "csv":
-                raw_chunks, meta = load_csv(content, filename)
-            elif source_type == "phmsa_zip":
-                all_results = load_phmsa_zip(content)
-                raw_chunks = []
-                for chunks, _meta, _ in all_results:
-                    raw_chunks.extend(chunks)
-                meta = {"source_type": "phmsa"}
-            else:
-                raw_chunks, meta = load_phmsa_tsv(content, filename)
-
-            if not raw_chunks:
-                doc.status = "FAILED"
-                await db.commit()
-                return {"error": "No chunks extracted"}
-
-            # Update document metadata from loader
-            if "year_from" in meta:
-                doc.year_from = meta["year_from"]
-            if "year_to" in meta:
-                doc.year_to = meta["year_to"]
-            if "commodity" in meta:
-                doc.commodity = meta["commodity"]
-
-            # Embed in batches of 100
-            texts = [c["text_content"] for c in raw_chunks]
-            embeddings: list[list[float]] = []
-            batch_size = 100
-            for i in range(0, len(texts), batch_size):
-                batch = texts[i : i + batch_size]
-                batch_embeddings = await embed_texts(batch)
-                embeddings.extend(batch_embeddings)
-
-            # Persist chunks
-            for raw_chunk, embedding in zip(raw_chunks, embeddings, strict=True):
-                chunk = Chunk(
-                    id=uuid.uuid4(),
-                    document_id=doc.id,
-                    chunk_index=raw_chunk["chunk_index"],
-                    text_content=raw_chunk["text_content"],
-                    token_count=raw_chunk["token_count"],
-                    page_ref=raw_chunk.get("page_ref"),
-                    section_label=raw_chunk.get("section_label"),
-                    embedding=embedding,
-                )
-                db.add(chunk)
-
-            doc.chunk_count = len(raw_chunks)
-            doc.status = "COMPLETED"
-
-            # Extract structured intelligence from the document
             try:
-                from app.services.insights import extract_document_insights
+                raw_chunks, meta = _parse(source_type, filename, content)
+                if not raw_chunks:
+                    raise DocumentParseError(f"No text could be extracted from {filename}")
 
-                doc.insights_json = await extract_document_insights(filename, raw_chunks) or {}
-            except Exception:
-                doc.insights_json = {}
+                for field in ("year_from", "year_to", "commodity"):
+                    if field in meta:
+                        setattr(doc, field, meta[field])
 
-            await db.commit()
+                texts = [c["text_content"] for c in raw_chunks]
+                embeddings: list[list[float]] = []
+                for i in range(0, len(texts), 100):
+                    embeddings.extend(await embed_texts(texts[i : i + 100]))
 
-            return {"document_id": document_id, "chunk_count": len(raw_chunks), "status": "COMPLETED"}
+                for raw_chunk, embedding in zip(raw_chunks, embeddings, strict=True):
+                    db.add(
+                        Chunk(
+                            id=uuid.uuid4(),
+                            document_id=doc.id,
+                            chunk_index=raw_chunk["chunk_index"],
+                            text_content=raw_chunk["text_content"],
+                            token_count=raw_chunk["token_count"],
+                            page_ref=raw_chunk.get("page_ref"),
+                            section_label=raw_chunk.get("section_label"),
+                            embedding=embedding,
+                        )
+                    )
 
-        except Exception as exc:
-            doc.status = "FAILED"
-            await db.commit()
-            raise exc
+                doc.chunk_count = len(raw_chunks)
+                doc.status = "COMPLETED"
+
+                try:
+                    from app.services.insights import extract_document_insights
+
+                    doc.insights_json = await extract_document_insights(filename, raw_chunks) or {}
+                except Exception:
+                    logger.warning("Insight extraction failed for %s", document_id, exc_info=True)
+                    doc.insights_json = {}
+
+                await db.commit()
+            except Exception as exc:
+                # Discard partial chunks, then record the failure on a clean transaction.
+                await db.rollback()
+                doc = await db.get(Document, doc_uuid)
+                if doc is not None:
+                    doc.status = "FAILED"
+                    await db.commit()
+                await audit_log.log_event(
+                    db,
+                    event_type="INGEST_FAILED",
+                    target_id=document_id,
+                    target_type="document",
+                    payload={"filename": filename, "error_type": type(exc).__name__},
+                )
+                raise
+
+            await audit_log.log_event(
+                db,
+                event_type="INGEST_COMPLETED",
+                target_id=document_id,
+                target_type="document",
+                payload={"filename": filename, "chunk_count": len(raw_chunks), "source_type": source_type},
+            )
+
+        redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            await semantic_cache.invalidate(redis)
+        finally:
+            await redis.aclose()
+
+        return {"document_id": document_id, "chunk_count": len(raw_chunks), "status": "COMPLETED"}
+    finally:
+        await engine.dispose()

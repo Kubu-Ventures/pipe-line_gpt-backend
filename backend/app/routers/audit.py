@@ -19,6 +19,8 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 # Identity / security events — only ADMIN should see these
 ADMIN_ONLY_EVENT_TYPES = {
     "USER_LOGIN",
+    "USER_LOGIN_FAILED",
+    "USER_MFA_RESET",
     "USER_INVITED",
     "USER_INVITED_ACCEPTED",
     "USER_MFA_ENROLLED",
@@ -35,12 +37,41 @@ _EVENT_META: dict[str, tuple[str, str, str]] = {
     "COMPLIANCE_FLAG": ("Compliance Alert", "IMP Deadline Flag", "49 CFR §192.945 / §192.947"),
     "QUERY_COMPLETED": ("AI Query", "Query Answered", "49 CFR §192.911"),
     "INGEST_COMPLETED": ("Document Management", "Document Ingested", "49 CFR §192.911 (records)"),
+    "INGEST_FAILED": ("Document Management", "Document Ingestion Failed", "49 CFR §192.911 (records)"),
+    "DOCUMENT_DELETED": ("Document Management", "Document Deleted", "49 CFR §192.911 (records)"),
+    "QUERY_FAILED": ("AI Query", "Query Failed", "49 CFR §192.911"),
     "USER_LOGIN": ("Security", "User Login", "49 CFR §192.911 (access control)"),
+    "USER_LOGIN_FAILED": ("Security", "Failed Sign-in", "49 CFR §192.911 (access control)"),
+    "USER_MFA_RESET": ("Security", "MFA Reset by Admin", "49 CFR §192.911 (access control)"),
+    "USER_STATUS_CHANGED": ("Security", "Account Status Changed", "49 CFR §192.911 (access control)"),
     "USER_INVITED": ("Security", "Invitation Sent", "49 CFR §192.911 (access control)"),
     "USER_INVITED_ACCEPTED": ("Security", "Invitation Accepted", "49 CFR §192.911 (access control)"),
     "USER_MFA_ENROLLED": ("Security", "MFA Enrolled", "49 CFR §192.911 (access control)"),
     "CONFIG_CHANGE": ("System", "Configuration Changed", "49 CFR §192.911"),
 }
+
+
+# Event names written by earlier releases. Audit rows are append-only, so they are
+# normalized when read instead of being rewritten.
+LEGACY_EVENT_ALIASES = {
+    "HITL_APPROVE": "HITL_APPROVED",
+    "HITL_EDIT": "HITL_EDITED",
+    "HITL_REJECT": "HITL_REJECTED",
+}
+
+
+def canonical_event_type(event_type: str) -> str:
+    return LEGACY_EVENT_ALIASES.get(event_type, event_type)
+
+
+def _stored_names(event_type: str) -> list[str]:
+    return [event_type, *(old for old, new in LEGACY_EVENT_ALIASES.items() if new == event_type)]
+
+
+def _csv_safe(value: object) -> str:
+    """Neutralize spreadsheet formula injection in user-controlled cells."""
+    text = "" if value is None else str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
 
 
 def _is_valid_uuid(value: str) -> bool:
@@ -69,7 +100,7 @@ def _derive_csv_row(
 
     risk = p.get("risk_level") or "—"
 
-    etype = e.event_type
+    etype = canonical_event_type(e.event_type)
     if etype == "HITL_APPROVED":
         decision = p.get("final_action") or "Approved"
     elif etype == "HITL_REJECTED":
@@ -134,7 +165,7 @@ async def list_audit_events(
         # Silently ignore if engineer requests an admin-only type
         if user.role == "ENGINEER" and event_type in ADMIN_ONLY_EVENT_TYPES:
             return AuditListResponse(total=0, page=page, page_size=page_size, items=[])
-        base_stmt = base_stmt.where(AuditEvent.event_type == event_type)
+        base_stmt = base_stmt.where(AuditEvent.event_type.in_(_stored_names(event_type)))
     if actor_id:
         base_stmt = base_stmt.where(AuditEvent.actor_id == actor_id)
 
@@ -150,7 +181,10 @@ async def list_audit_events(
         total=total,
         page=page,
         page_size=page_size,
-        items=[AuditEventOut.model_validate(e) for e in events],
+        items=[
+            AuditEventOut.model_validate(e).model_copy(update={"event_type": canonical_event_type(e.event_type)})
+            for e in events
+        ],
     )
 
 
@@ -174,7 +208,7 @@ async def export_audit_csv(
             event_type = None  # ignore the filter silently
 
     if event_type:
-        stmt = stmt.where(AuditEvent.event_type == event_type)
+        stmt = stmt.where(AuditEvent.event_type.in_(_stored_names(event_type)))
 
     result = await db.execute(stmt)
     events = result.scalars().all()
@@ -208,9 +242,10 @@ async def export_audit_csv(
     )
 
     for e in events:
-        category, label, reg_ref = _EVENT_META.get(e.event_type, ("Unknown", e.event_type, "—"))
+        etype = canonical_event_type(e.event_type)
+        category, label, reg_ref = _EVENT_META.get(etype, ("Unknown", etype, "—"))
         actor_email = actor_emails.get(str(e.actor_id), "")
-        writer.writerow(_derive_csv_row(e, actor_email, category, label, reg_ref))
+        writer.writerow([_csv_safe(cell) for cell in _derive_csv_row(e, actor_email, category, label, reg_ref)])
 
     csv_bytes = output.getvalue().encode("utf-8-sig")  # utf-8-sig adds BOM for Excel compatibility
 
