@@ -12,7 +12,7 @@ dependencies = [
     "asyncpg",
     "pgvector",
     "anthropic>=0.40",
-    "pydantic-settings>=2.0",
+    "pydantic-settings>=2.7",
     "celery[redis]",
     "flower",
     "pdfplumber",

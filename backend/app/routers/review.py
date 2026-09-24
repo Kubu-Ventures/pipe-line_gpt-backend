@@ -5,6 +5,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import Query as QueryParam
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -23,22 +24,27 @@ from app.services.hitl import submit_review_decision
 router = APIRouter(prefix="/review", tags=["review"])
 logger = logging.getLogger(__name__)
 
+# Past-tense names are what the audit export and frontend expect.
+HITL_EVENT_TYPES = {"APPROVE": "HITL_APPROVED", "EDIT": "HITL_EDITED", "REJECT": "HITL_REJECTED"}
+
 
 @router.get("", response_model=list[ReviewQueueItem])
 async def get_review_queue(
-    page: int = 1,
-    page_size: int = 20,
+    user: Annotated[User, Depends(RequireEngineer)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    page: Annotated[int, QueryParam(ge=1)] = 1,
+    page_size: Annotated[int, QueryParam(ge=1, le=100)] = 20,
     status: str | None = None,
-    user: Annotated[User, Depends(RequireEngineer)] = None,
-    db: Annotated[AsyncSession, Depends(get_db)] = None,
 ) -> list[ReviewQueueItem]:
-    """Return paginated list of AI responses, filtered by status (PENDING/APPROVED/REJECTED/all)."""
+    """Paginated review items, oldest question first, filtered by PENDING/APPROVED/EDITED/REJECTED (or all)."""
     offset = (page - 1) * page_size
 
     stmt = (
         select(HITLReview)
+        .join(Response, HITLReview.response_id == Response.id)
+        .join(Query, Response.query_id == Query.id)
         .options(selectinload(HITLReview.response).selectinload(Response.query))
-        .order_by(HITLReview.id.asc())
+        .order_by(Query.query_ts.asc(), HITLReview.id.asc())
         .offset(offset)
         .limit(page_size)
     )
@@ -47,6 +53,8 @@ async def get_review_queue(
         stmt = stmt.where(HITLReview.decision.is_(None))
     elif status == "APPROVED":
         stmt = stmt.where(HITLReview.decision == "APPROVE")
+    elif status == "EDITED":
+        stmt = stmt.where(HITLReview.decision == "EDIT")
     elif status == "REJECTED":
         stmt = stmt.where(HITLReview.decision == "REJECT")
     # else: no filter — return all
@@ -66,7 +74,9 @@ async def get_review_queue(
                     logger.warning("Skipping malformed citation on review %s", review.id, exc_info=True)
 
         conf = response.confidence_score if response else 0.0
-        if conf >= 0.7:
+        if response and response.risk_level:
+            risk_level = response.risk_level
+        elif conf >= 0.7:  # rows from before risk_level was stored
             risk_level = "LOW"
         elif conf >= 0.4:
             risk_level = "MEDIUM"
@@ -103,11 +113,11 @@ async def get_review_queue(
 
 @router.post("/{query_id}", response_model=ReviewDecisionResponse)
 async def submit_decision(
-    query_id: str,
+    query_id: uuid.UUID,
     body: ReviewDecisionRequest,
     request: Request,
-    user: Annotated[User, Depends(RequireEngineer)] = None,
-    db: Annotated[AsyncSession, Depends(get_db)] = None,
+    user: Annotated[User, Depends(RequireEngineer)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ReviewDecisionResponse:
     """Submit APPROVE / EDIT / REJECT decision for a queued response."""
     if body.decision not in ("APPROVE", "EDIT", "REJECT"):
@@ -131,8 +141,10 @@ async def submit_decision(
         select(HITLReview)
         .join(Response, HITLReview.response_id == Response.id)
         .join(Query, Response.query_id == Query.id)
-        .where(Query.id == uuid.UUID(query_id))
+        .where(Query.id == query_id)
         .options(selectinload(HITLReview.response).selectinload(Response.query))
+        # Lock the row so two engineers deciding at once can't both succeed.
+        .with_for_update(of=HITLReview)
     )
     result = await db.execute(stmt)
     review = result.scalar_one_or_none()
@@ -154,12 +166,12 @@ async def submit_decision(
 
     await audit_log.log_event(
         db,
-        event_type=f"HITL_{body.decision}",
+        event_type=HITL_EVENT_TYPES[body.decision],
         actor_id=str(user.id),
         target_id=str(updated_review.id),
         target_type="hitl_review",
         payload={
-            "query_id": query_id,
+            "query_id": str(query_id),
             "decision": body.decision,
             "reason": body.reason,
             "has_edit": body.final_text is not None,

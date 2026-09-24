@@ -14,7 +14,9 @@ class TokenResponse(BaseModel):
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(..., max_length=256)
+    # Required for users with TOTP enrolled; the API answers 401 {"code": "mfa_required"} when missing.
+    totp_code: str | None = Field(None, min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
 class UserOut(BaseModel):
@@ -32,7 +34,7 @@ class UserOut(BaseModel):
 
 class AcceptInviteRequest(BaseModel):
     token: str
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=12, max_length=256)
 
 
 class MFASetupResponse(BaseModel):
@@ -41,7 +43,7 @@ class MFASetupResponse(BaseModel):
 
 
 class MFAVerifyRequest(BaseModel):
-    code: str = Field(..., min_length=6, max_length=6)
+    code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
 # ── Admin / Invitations ───────────────────────────────────────────────────────

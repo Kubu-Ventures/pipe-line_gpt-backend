@@ -9,13 +9,20 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.middleware.auth import (
-    RequireEngineer,
     create_access_token,
     get_current_user,
     get_db,
+    get_user_allow_mfa_setup,
     hash_password,
     verify_password,
+)
+from app.middleware.rate_limit import (
+    claim_totp_code,
+    clear_login_failures,
+    ensure_login_allowed,
+    record_login_failure,
 )
 from app.models.db import Invitation, User
 from app.models.schemas import (
@@ -30,6 +37,34 @@ from app.services import audit_log
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+MFA_REQUIRED_ROLES = ("ENGINEER", "ADMIN")
+
+
+def _client_ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
+
+
+def _is_enrolled(user: User) -> bool:
+    return bool(user.mfa_enabled and user.mfa_secret)
+
+
+def _verify_totp(user: User, code: str) -> bool:
+    return bool(user.mfa_secret) and pyotp.TOTP(user.mfa_secret).verify(code, valid_window=1)
+
+
+async def _reject_login(db: AsyncSession, request: Request, email: str, reason: str, detail: object) -> None:
+    ip = _client_ip(request)
+    await record_login_failure(email, ip)
+    await audit_log.log_event(
+        db,
+        event_type="USER_LOGIN_FAILED",
+        target_id=email,
+        target_type="user",
+        payload={"email": email, "reason": reason},
+        ip_address=ip,
+    )
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
@@ -37,24 +72,44 @@ async def login(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TokenResponse:
-    result = await db.execute(select(User).where(User.email == body.email))
-    user = result.scalar_one_or_none()
+    email = body.email.lower()
+    await ensure_login_allowed(email, _client_ip(request))
 
-    if not user or not verify_password(body.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if not verify_password(body.password, user.hashed_password if user else None):
+        await _reject_login(db, request, email, "bad_credentials", "Invalid credentials")
 
-    if user.status == "SUSPENDED":
+    if user.status != "ACTIVE":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account suspended. Contact your administrator.",
         )
 
+    scope = "full"
+    mfa_setup_required = False
+    if _is_enrolled(user):
+        if not body.totp_code:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": "mfa_required", "message": "Enter the 6-digit code from your authenticator app."},
+            )
+        if not _verify_totp(user, body.totp_code) or not await claim_totp_code(str(user.id), body.totp_code):
+            await _reject_login(
+                db,
+                request,
+                email,
+                "bad_totp",
+                {"code": "mfa_invalid", "message": "Invalid or already-used authentication code."},
+            )
+    elif user.role in MFA_REQUIRED_ROLES and not (settings.demo_mode and user.mfa_enabled):
+        # Not enrolled (demo accounts are pre-flagged and skip this only in DEMO_MODE):
+        # issue a token that can only reach the enrollment endpoints.
+        scope = "mfa_setup"
+        mfa_setup_required = True
+
+    await clear_login_failures(email)
     user.last_login = datetime.now(UTC)
     await db.commit()
-
-    token = create_access_token(str(user.id), user.role)
-
-    mfa_setup_required = user.role in ("ENGINEER", "ADMIN") and not user.mfa_enabled
 
     await audit_log.log_event(
         db,
@@ -63,14 +118,17 @@ async def login(
         target_id=str(user.id),
         target_type="user",
         payload={"email": user.email, "mfa_setup_required": mfa_setup_required},
-        ip_address=request.client.host if request.client else None,
+        ip_address=_client_ip(request),
     )
 
-    return TokenResponse(access_token=token, mfa_setup_required=mfa_setup_required)
+    return TokenResponse(
+        access_token=create_access_token(str(user.id), user.role, scope=scope),
+        mfa_setup_required=mfa_setup_required,
+    )
 
 
 @router.get("/me", response_model=UserOut)
-async def get_me(user: Annotated[User, Depends(get_current_user)]) -> UserOut:
+async def get_me(user: Annotated[User, Depends(get_user_allow_mfa_setup)]) -> UserOut:
     return UserOut.model_validate(user)
 
 
@@ -83,7 +141,7 @@ async def update_preferred_language(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> UserOut:
-    lang = body.get("language", "").lower()
+    lang = str(body.get("language", "")).lower()
     if lang not in _SUPPORTED_LOCALES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -146,7 +204,7 @@ async def accept_invite(
         target_id=str(user.id),
         target_type="user",
         payload={"email": invite.email, "role": invite.role},
-        ip_address=request.client.host if request.client else None,
+        ip_address=_client_ip(request),
     )
 
     return {"message": "Account created. You may now sign in."}
@@ -154,40 +212,42 @@ async def accept_invite(
 
 @router.get("/mfa/setup", response_model=MFASetupResponse)
 async def mfa_setup(
-    user: Annotated[User, Depends(RequireEngineer)],
+    user: Annotated[User, Depends(get_user_allow_mfa_setup)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> MFASetupResponse:
-    if user.mfa_enabled:
+    if user.role not in MFA_REQUIRED_ROLES:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
+    if _is_enrolled(user):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MFA is already enrolled.")
 
     if not user.mfa_secret:
         user.mfa_secret = pyotp.random_base32()
+        # Legacy rows were flagged enabled without a secret; enrollment starts over.
+        user.mfa_enabled = False
         await db.commit()
 
-    uri = pyotp.TOTP(user.mfa_secret).provisioning_uri(
-        name=user.email,
-        issuer_name="PipelineGPT",
-    )
+    uri = pyotp.TOTP(user.mfa_secret).provisioning_uri(name=user.email, issuer_name="PipelineGPT")
     return MFASetupResponse(provisioning_uri=uri, secret=user.mfa_secret)
 
 
 @router.post("/mfa/verify", status_code=status.HTTP_200_OK)
 async def mfa_verify(
     body: MFAVerifyRequest,
-    user: Annotated[User, Depends(RequireEngineer)],
+    user: Annotated[User, Depends(get_user_allow_mfa_setup)],
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    if user.mfa_enabled:
+    if user.role not in MFA_REQUIRED_ROLES:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
+    if _is_enrolled(user):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MFA is already enrolled.")
-
     if not user.mfa_secret:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="MFA setup not initiated. Call /auth/mfa/setup first."
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="MFA setup not initiated. Call /auth/mfa/setup first.",
         )
 
-    totp = pyotp.TOTP(user.mfa_secret)
-    if not totp.verify(body.code, valid_window=1):
+    if not _verify_totp(user, body.code) or not await claim_totp_code(str(user.id), body.code):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code. Try again.")
 
     user.mfa_enabled = True
@@ -200,7 +260,7 @@ async def mfa_verify(
         target_id=str(user.id),
         target_type="user",
         payload={"email": user.email},
-        ip_address=request.client.host if request.client else None,
+        ip_address=_client_ip(request),
     )
 
-    return {"message": "MFA enrolled successfully."}
+    return {"message": "MFA enrolled successfully. Sign in again with your authentication code."}

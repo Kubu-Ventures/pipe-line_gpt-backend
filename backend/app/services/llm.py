@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator
+from functools import lru_cache
 
 import anthropic
 
@@ -24,10 +25,30 @@ Return only the alternative questions, one per line, no numbering or bullets.
 Original query: {question}"""
 
 
+@lru_cache(maxsize=1)
+def get_client() -> anthropic.AsyncAnthropic:
+    """Shared client so HTTP connections are pooled across requests."""
+    return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=120.0, max_retries=2)
+
+
+def user_facing_llm_error(exc: Exception) -> str:
+    """Map SDK errors to a message safe to show operators (no raw upstream details)."""
+    if isinstance(exc, anthropic.AuthenticationError | anthropic.PermissionDeniedError):
+        return "The AI service is misconfigured (invalid API credentials). Contact your administrator."
+    if isinstance(exc, anthropic.RateLimitError):
+        return "The AI service is busy right now. Please try again in a minute."
+    if isinstance(exc, anthropic.BadRequestError) and "credit" in str(exc).lower():
+        return "The AI service account is out of credits. Contact your administrator."
+    if isinstance(exc, anthropic.APIConnectionError | anthropic.APITimeoutError):
+        return "Could not reach the AI service. Please try again."
+    if isinstance(exc, anthropic.APIStatusError) and exc.status_code >= 500:
+        return "The AI service had a temporary error. Please try again."
+    return "The answer could not be generated. Please try again."
+
+
 async def expand_query(question: str) -> list[str]:
     """Use Claude to generate alternative phrasings for improved retrieval recall."""
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-    response = await client.messages.create(
+    response = await get_client().messages.create(
         model=settings.llm_model,
         max_tokens=256,
         messages=[{"role": "user", "content": EXPANSION_PROMPT.format(question=question)}],
@@ -107,9 +128,9 @@ async def stream_answer(
     question: str,
     context_block: str,
     language: str = "en",
+    usage: dict[str, int] | None = None,
 ) -> AsyncIterator[str]:
-    """Yield answer tokens from Claude with source-grounded streaming."""
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    """Yield answer tokens from Claude. If `usage` is given, it receives input/output token counts."""
 
     lang_instruction = ""
     if language and language.lower() != "en":
@@ -122,7 +143,7 @@ async def stream_answer(
 
     user_message = f"RETRIEVED CONTEXT:\n{context_block}\n\nUSER QUESTION: {question}{lang_instruction}"
 
-    async with client.messages.stream(
+    async with get_client().messages.stream(
         model=settings.llm_model,
         max_tokens=2048,
         system=SYSTEM_PROMPT,
@@ -130,3 +151,7 @@ async def stream_answer(
     ) as stream:
         async for text in stream.text_stream:
             yield text
+        if usage is not None:
+            final = await stream.get_final_message()
+            usage["input_tokens"] = final.usage.input_tokens
+            usage["output_tokens"] = final.usage.output_tokens

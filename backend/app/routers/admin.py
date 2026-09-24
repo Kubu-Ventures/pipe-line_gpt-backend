@@ -142,3 +142,34 @@ async def update_user_status(
     )
 
     return UserOut.model_validate(user)
+
+
+@router.post("/users/{user_id}/reset-mfa", response_model=UserOut)
+async def reset_user_mfa(
+    user_id: uuid.UUID,
+    request: Request,
+    actor: Annotated[User, Depends(RequireAdmin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> UserOut:
+    """Clear a user's TOTP enrollment (lost device). They must re-enroll at next sign-in."""
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    if user.id == actor.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ask another admin to reset your MFA.")
+
+    user.mfa_enabled = False
+    user.mfa_secret = None
+    await db.commit()
+    await db.refresh(user)
+
+    await audit_log.log_event(
+        db,
+        event_type="USER_MFA_RESET",
+        actor_id=str(actor.id),
+        target_id=str(user.id),
+        target_type="user",
+        payload={"email": user.email},
+        ip_address=request.client.host if request.client else None,
+    )
+    return UserOut.model_validate(user)
