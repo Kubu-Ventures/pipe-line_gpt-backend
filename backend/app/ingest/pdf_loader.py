@@ -12,8 +12,8 @@ def load_pdf(content: bytes, filename: str) -> tuple[list[dict], dict]:
     """
     try:
         import pdfplumber
-    except ImportError:
-        raise RuntimeError("pdfplumber not installed. Run: pip install pdfplumber")
+    except ImportError as exc:
+        raise RuntimeError("pdfplumber not installed. Run: pip install pdfplumber") from exc
 
     all_chunks: list[dict] = []
     metadata: dict = {"filename": filename, "source_type": "pdf", "pages": 0}

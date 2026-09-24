@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.middleware.auth import RequireAdmin, get_current_user, get_db
+from app.middleware.auth import RequireAdmin, get_db
 from app.models.db import Invitation, User
 from app.models.schemas import (
     InviteOut,
@@ -38,7 +38,7 @@ async def list_invitations(
     actor: Annotated[User, Depends(RequireAdmin)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[InviteOut]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     result = await db.execute(
         select(Invitation)
         .where(Invitation.accepted_at.is_(None))
@@ -65,7 +65,7 @@ async def create_invitation(
         )
 
     # Check no unexpired pending invitation
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     existing_invite = await db.execute(
         select(Invitation)
         .where(Invitation.email == body.email.lower())

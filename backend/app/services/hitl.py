@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.db import HITLReview, Query, Response
-
 
 # Keywords that trigger HIGH risk routing
 HIGH_RISK_VERBS = re.compile(
@@ -84,7 +83,7 @@ async def submit_review_decision(
     review.reviewer_id = reviewer_id
     review.decision = decision
     review.reason = reason
-    review.reviewed_at = datetime.now(timezone.utc)
+    review.reviewed_at = datetime.now(UTC)
 
     if decision == "APPROVE":
         review.final_text = review.original_text

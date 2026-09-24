@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.middleware.auth import RequireOperator, RequireEngineer, get_db, get_current_user
+from app.middleware.auth import RequireEngineer, RequireOperator, get_db
 from app.models.db import Document, User
 from app.models.schemas import IngestResponse, IngestStatusResponse
 from app.services import audit_log
@@ -141,9 +141,7 @@ async def ingest_history(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
     """Return all ingested documents ordered by most recent first."""
-    result = await db.execute(
-        select(Document).order_by(Document.ingest_date.desc()).limit(100)
-    )
+    result = await db.execute(select(Document).order_by(Document.ingest_date.desc()).limit(100))
     docs = result.scalars().all()
     return [
         {
@@ -170,6 +168,7 @@ async def get_chunk_text(
 ) -> dict:
     """Return the full text of a specific chunk for display in the citation panel."""
     from app.models.db import Chunk
+
     result = await db.execute(
         select(Chunk).where(
             Chunk.document_id == uuid.UUID(document_id),
@@ -202,7 +201,7 @@ async def delete_document(
     try:
         doc_uuid = uuid.UUID(document_id)
     except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid document ID.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid document ID.") from None
 
     result = await db.execute(select(Document).where(Document.id == doc_uuid))
     doc = result.scalar_one_or_none()
@@ -230,21 +229,132 @@ async def delete_document(
 
 def _build_demo_datasets() -> list[tuple[str, str, bytes]]:
     """Generate realistic sample pipeline datasets for demo/testing."""
-    import csv, io
+    import csv
+    import io
 
     # ── ILI inspection report ────────────────────────────────────────────────
     ili_rows = [
-        ["segment_id", "inspection_date", "feature_type", "odometer_m", "wall_loss_pct", "depth_mm", "length_mm", "clock_position", "action_required", "commodity"],
-        ["SEG-TX-4B", "2024-03-15", "Metal Loss - External Corrosion", 1240.5, 32.4, 4.1, 85, "6:00", "Monitor - Re-inspect within 12 months", "Crude Oil"],
-        ["SEG-TX-4B", "2024-03-15", "Metal Loss - External Corrosion", 2890.2, 41.8, 5.3, 120, "4:30", "IMMEDIATE ACTION - Wall loss exceeds 40% ASME B31.8S threshold", "Crude Oil"],
+        [
+            "segment_id",
+            "inspection_date",
+            "feature_type",
+            "odometer_m",
+            "wall_loss_pct",
+            "depth_mm",
+            "length_mm",
+            "clock_position",
+            "action_required",
+            "commodity",
+        ],
+        [
+            "SEG-TX-4B",
+            "2024-03-15",
+            "Metal Loss - External Corrosion",
+            1240.5,
+            32.4,
+            4.1,
+            85,
+            "6:00",
+            "Monitor - Re-inspect within 12 months",
+            "Crude Oil",
+        ],
+        [
+            "SEG-TX-4B",
+            "2024-03-15",
+            "Metal Loss - External Corrosion",
+            2890.2,
+            41.8,
+            5.3,
+            120,
+            "4:30",
+            "IMMEDIATE ACTION - Wall loss exceeds 40% ASME B31.8S threshold",
+            "Crude Oil",
+        ],
         ["SEG-TX-4B", "2024-03-15", "Dent", 4510.0, 0, 12.2, 200, "12:00", "Monitor", "Crude Oil"],
-        ["SEG-TX-4B", "2024-03-15", "Metal Loss - Internal Corrosion", 6720.8, 18.2, 2.3, 45, "6:00", "No action required", "Crude Oil"],
-        ["SEG-TX-4B", "2024-03-15", "Metal Loss - External Corrosion", 9340.1, 55.1, 7.0, 160, "3:00", "IMMEDIATE ACTION - Critical wall loss", "Crude Oil"],
-        ["SEG-TX-4B", "2024-03-15", "Crack - Seam Weld", 11200.4, 0, 0, 95, "9:00", "Pressure reduction required", "Crude Oil"],
-        ["SEG-TX-4B", "2024-03-15", "Metal Loss - External Corrosion", 14800.7, 28.9, 3.7, 70, "6:30", "Monitor - Re-inspect within 18 months", "Crude Oil"],
-        ["SEG-TX-7A", "2023-11-02", "Metal Loss - External Corrosion", 550.3, 38.5, 4.9, 110, "6:00", "Repair within 60 days", "Natural Gas"],
-        ["SEG-TX-7A", "2023-11-02", "Metal Loss - External Corrosion", 2100.6, 22.1, 2.8, 55, "5:00", "Monitor", "Natural Gas"],
-        ["SEG-TX-7A", "2023-11-02", "Dent with Metal Loss", 3850.9, 15.3, 1.9, 40, "3:00", "Monitor closely", "Natural Gas"],
+        [
+            "SEG-TX-4B",
+            "2024-03-15",
+            "Metal Loss - Internal Corrosion",
+            6720.8,
+            18.2,
+            2.3,
+            45,
+            "6:00",
+            "No action required",
+            "Crude Oil",
+        ],
+        [
+            "SEG-TX-4B",
+            "2024-03-15",
+            "Metal Loss - External Corrosion",
+            9340.1,
+            55.1,
+            7.0,
+            160,
+            "3:00",
+            "IMMEDIATE ACTION - Critical wall loss",
+            "Crude Oil",
+        ],
+        [
+            "SEG-TX-4B",
+            "2024-03-15",
+            "Crack - Seam Weld",
+            11200.4,
+            0,
+            0,
+            95,
+            "9:00",
+            "Pressure reduction required",
+            "Crude Oil",
+        ],
+        [
+            "SEG-TX-4B",
+            "2024-03-15",
+            "Metal Loss - External Corrosion",
+            14800.7,
+            28.9,
+            3.7,
+            70,
+            "6:30",
+            "Monitor - Re-inspect within 18 months",
+            "Crude Oil",
+        ],
+        [
+            "SEG-TX-7A",
+            "2023-11-02",
+            "Metal Loss - External Corrosion",
+            550.3,
+            38.5,
+            4.9,
+            110,
+            "6:00",
+            "Repair within 60 days",
+            "Natural Gas",
+        ],
+        [
+            "SEG-TX-7A",
+            "2023-11-02",
+            "Metal Loss - External Corrosion",
+            2100.6,
+            22.1,
+            2.8,
+            55,
+            "5:00",
+            "Monitor",
+            "Natural Gas",
+        ],
+        [
+            "SEG-TX-7A",
+            "2023-11-02",
+            "Dent with Metal Loss",
+            3850.9,
+            15.3,
+            1.9,
+            40,
+            "3:00",
+            "Monitor closely",
+            "Natural Gas",
+        ],
     ]
     ili_buf = io.StringIO()
     csv.writer(ili_buf).writerows(ili_rows)
@@ -258,7 +368,16 @@ def _build_demo_datasets() -> list[tuple[str, str, bytes]]:
         ["2024-06-01 12:00", "SEG-TX-4B", "PUMP-01", 821, 44800, 79.5, "NORMAL", ""],
         ["2024-06-01 18:00", "SEG-TX-4B", "PUMP-01", 834, 43900, 83.2, "WARNING", "HIGH_PRESSURE"],
         ["2024-06-02 00:00", "SEG-TX-4B", "PUMP-01", 809, 45500, 71.6, "NORMAL", ""],
-        ["2024-06-02 06:00", "SEG-TX-4B", "PUMP-01", 756, 41200, 69.8, "ALARM", "PRESSURE_DROP - Possible leak at MP 9.34"],
+        [
+            "2024-06-02 06:00",
+            "SEG-TX-4B",
+            "PUMP-01",
+            756,
+            41200,
+            69.8,
+            "ALARM",
+            "PRESSURE_DROP - Possible leak at MP 9.34",
+        ],
         ["2024-06-02 07:00", "SEG-TX-4B", "PUMP-01", 748, 40100, 69.5, "ALARM", "PRESSURE_DROP"],
         ["2024-06-02 08:00", "SEG-TX-4B", "PUMP-01", 812, 45000, 70.2, "NORMAL", "RESOLVED"],
         ["2024-06-03 00:00", "SEG-TX-7A", "COMP-03", 920, 82000, 65.4, "NORMAL", ""],
@@ -269,13 +388,118 @@ def _build_demo_datasets() -> list[tuple[str, str, bytes]]:
 
     # ── PHMSA-style incident report ──────────────────────────────────────────
     phmsa_rows = [
-        ["REPORT_NUMBER", "ACCIDENT_DATE", "OPERATOR_NAME", "SYSTEM_TYPE", "COMMODITY", "STATE", "COUNTY", "CAUSE_CATEGORY", "CAUSE_SUBCATEGORY", "TOTAL_COST_CURRENT", "FATALITIES", "INJURIES", "VOLUME_LOST_BBL", "NARRATIVE"],
-        ["20240001", "2024-01-14", "Gulf Coast Pipeline LLC", "HVL AND OTHER FLAMMABLE/TOXIC GAS", "Crude Oil", "TX", "Harris", "CORROSION", "EXTERNAL CORROSION", 285000, 0, 0, 42.5, "External corrosion failure on 12-inch crude oil line at MP 9.34. Wall loss exceeded 40% threshold identified in prior ILI. Repair completed within 48 hours."],
-        ["20240002", "2024-02-28", "Midland Gas Transmission Co", "NATURAL GAS TRANSMISSION", "Natural Gas", "TX", "Midland", "EXCAVATION DAMAGE", "THIRD-PARTY EXCAVATION", 142000, 0, 1, 0, "Third-party contractor struck 6-inch gas line during road construction. One worker received minor burns. Line isolated and repaired within 6 hours."],
-        ["20240003", "2024-03-10", "Permian Basin Pipeline Inc", "HVL AND OTHER FLAMMABLE/TOXIC GAS", "NGL", "NM", "Lea", "MATERIAL/WELD/EQUIP FAILURE", "PIPE BODY FAILURE", 890000, 0, 0, 218.3, "Longitudinal seam weld failure on 16-inch NGL line. Cause attributed to stress corrosion cracking. Line segment replaced with upgraded material."],
-        ["20240004", "2024-04-05", "Southern Gas Distribution LLC", "NATURAL GAS DISTRIBUTION", "Natural Gas", "LA", "Orleans", "CORROSION", "INTERNAL CORROSION", 67000, 0, 0, 0, "Internal corrosion pinhole leak on 4-inch gas distribution line in residential area. Area evacuated, leak isolated, section replaced."],
-        ["20240005", "2024-05-20", "Rocky Mountain Crude Transport", "HVL AND OTHER FLAMMABLE/TOXIC GAS", "Crude Oil", "WY", "Sweetwater", "INCORRECT OPERATION", "INCORRECT OPERATION", 195000, 0, 0, 31.7, "Operator error during valve maintenance resulted in overpressure condition and fitting failure. Revised operating procedures implemented."],
-        ["20240006", "2024-06-03", "Gulf Coast Pipeline LLC", "HVL AND OTHER FLAMMABLE/TOXIC GAS", "Crude Oil", "TX", "Brazoria", "CORROSION", "EXTERNAL CORROSION", 412000, 0, 0, 88.4, "External corrosion failure adjacent to coating holiday. ILI had flagged feature for monitoring. Inspection interval to be reduced."],
+        [
+            "REPORT_NUMBER",
+            "ACCIDENT_DATE",
+            "OPERATOR_NAME",
+            "SYSTEM_TYPE",
+            "COMMODITY",
+            "STATE",
+            "COUNTY",
+            "CAUSE_CATEGORY",
+            "CAUSE_SUBCATEGORY",
+            "TOTAL_COST_CURRENT",
+            "FATALITIES",
+            "INJURIES",
+            "VOLUME_LOST_BBL",
+            "NARRATIVE",
+        ],
+        [
+            "20240001",
+            "2024-01-14",
+            "Gulf Coast Pipeline LLC",
+            "HVL AND OTHER FLAMMABLE/TOXIC GAS",
+            "Crude Oil",
+            "TX",
+            "Harris",
+            "CORROSION",
+            "EXTERNAL CORROSION",
+            285000,
+            0,
+            0,
+            42.5,
+            "External corrosion failure on 12-inch crude oil line at MP 9.34. Wall loss exceeded 40% threshold identified in prior ILI. Repair completed within 48 hours.",
+        ],
+        [
+            "20240002",
+            "2024-02-28",
+            "Midland Gas Transmission Co",
+            "NATURAL GAS TRANSMISSION",
+            "Natural Gas",
+            "TX",
+            "Midland",
+            "EXCAVATION DAMAGE",
+            "THIRD-PARTY EXCAVATION",
+            142000,
+            0,
+            1,
+            0,
+            "Third-party contractor struck 6-inch gas line during road construction. One worker received minor burns. Line isolated and repaired within 6 hours.",
+        ],
+        [
+            "20240003",
+            "2024-03-10",
+            "Permian Basin Pipeline Inc",
+            "HVL AND OTHER FLAMMABLE/TOXIC GAS",
+            "NGL",
+            "NM",
+            "Lea",
+            "MATERIAL/WELD/EQUIP FAILURE",
+            "PIPE BODY FAILURE",
+            890000,
+            0,
+            0,
+            218.3,
+            "Longitudinal seam weld failure on 16-inch NGL line. Cause attributed to stress corrosion cracking. Line segment replaced with upgraded material.",
+        ],
+        [
+            "20240004",
+            "2024-04-05",
+            "Southern Gas Distribution LLC",
+            "NATURAL GAS DISTRIBUTION",
+            "Natural Gas",
+            "LA",
+            "Orleans",
+            "CORROSION",
+            "INTERNAL CORROSION",
+            67000,
+            0,
+            0,
+            0,
+            "Internal corrosion pinhole leak on 4-inch gas distribution line in residential area. Area evacuated, leak isolated, section replaced.",
+        ],
+        [
+            "20240005",
+            "2024-05-20",
+            "Rocky Mountain Crude Transport",
+            "HVL AND OTHER FLAMMABLE/TOXIC GAS",
+            "Crude Oil",
+            "WY",
+            "Sweetwater",
+            "INCORRECT OPERATION",
+            "INCORRECT OPERATION",
+            195000,
+            0,
+            0,
+            31.7,
+            "Operator error during valve maintenance resulted in overpressure condition and fitting failure. Revised operating procedures implemented.",
+        ],
+        [
+            "20240006",
+            "2024-06-03",
+            "Gulf Coast Pipeline LLC",
+            "HVL AND OTHER FLAMMABLE/TOXIC GAS",
+            "Crude Oil",
+            "TX",
+            "Brazoria",
+            "CORROSION",
+            "EXTERNAL CORROSION",
+            412000,
+            0,
+            0,
+            88.4,
+            "External corrosion failure adjacent to coating holiday. ILI had flagged feature for monitoring. Inspection interval to be reduced.",
+        ],
     ]
     phmsa_buf = io.StringIO()
     csv.writer(phmsa_buf).writerows(phmsa_rows)
@@ -283,12 +507,60 @@ def _build_demo_datasets() -> list[tuple[str, str, bytes]]:
     # ── Compliance & integrity management schedule ───────────────────────────
     imp_rows = [
         ["segment_id", "regulation", "obligation", "due_date", "status", "last_assessment", "notes"],
-        ["SEG-TX-4B", "49 CFR §195.452", "ILI reassessment - High Consequence Area", "2024-09-30", "OVERDUE", "2019-08-14", "HCA segment exceeds 7-year reassessment interval. Schedule immediately."],
-        ["SEG-TX-4B", "49 CFR §195.452(j)(3)", "Pressure test - post-repair", "2024-07-15", "DUE", "N/A", "Required following June corrosion repair at MP 9.34."],
-        ["SEG-TX-7A", "49 CFR §192.919", "Baseline assessment - ILI", "2024-08-01", "IN PROGRESS", "Never", "New segment added to IMP. Baseline ILI tool run scheduled July 2024."],
-        ["SEG-NM-2C", "49 CFR §195.452(j)(1)", "Integrity assessment", "2024-12-31", "UPCOMING", "2019-12-10", "5-year reassessment due. ILI vendor contract in place."],
-        ["SEG-NM-2C", "ASME B31.8S §5", "Engineering critical assessment", "2024-10-15", "UPCOMING", "2020-03-22", "Required after crack-like feature identified in 2020 assessment."],
-        ["SEG-LA-9D", "49 CFR §192.723", "Leakage survey - Grade 1", "2024-07-01", "DUE", "2023-07-05", "Annual leakage survey required for Class 3 location."],
+        [
+            "SEG-TX-4B",
+            "49 CFR §195.452",
+            "ILI reassessment - High Consequence Area",
+            "2024-09-30",
+            "OVERDUE",
+            "2019-08-14",
+            "HCA segment exceeds 7-year reassessment interval. Schedule immediately.",
+        ],
+        [
+            "SEG-TX-4B",
+            "49 CFR §195.452(j)(3)",
+            "Pressure test - post-repair",
+            "2024-07-15",
+            "DUE",
+            "N/A",
+            "Required following June corrosion repair at MP 9.34.",
+        ],
+        [
+            "SEG-TX-7A",
+            "49 CFR §192.919",
+            "Baseline assessment - ILI",
+            "2024-08-01",
+            "IN PROGRESS",
+            "Never",
+            "New segment added to IMP. Baseline ILI tool run scheduled July 2024.",
+        ],
+        [
+            "SEG-NM-2C",
+            "49 CFR §195.452(j)(1)",
+            "Integrity assessment",
+            "2024-12-31",
+            "UPCOMING",
+            "2019-12-10",
+            "5-year reassessment due. ILI vendor contract in place.",
+        ],
+        [
+            "SEG-NM-2C",
+            "ASME B31.8S §5",
+            "Engineering critical assessment",
+            "2024-10-15",
+            "UPCOMING",
+            "2020-03-22",
+            "Required after crack-like feature identified in 2020 assessment.",
+        ],
+        [
+            "SEG-LA-9D",
+            "49 CFR §192.723",
+            "Leakage survey - Grade 1",
+            "2024-07-01",
+            "DUE",
+            "2023-07-05",
+            "Annual leakage survey required for Class 3 location.",
+        ],
     ]
     imp_buf = io.StringIO()
     csv.writer(imp_buf).writerows(imp_rows)

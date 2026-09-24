@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 import pyotp
@@ -49,7 +49,7 @@ async def login(
             detail="Account suspended. Contact your administrator.",
         )
 
-    user.last_login = datetime.now(timezone.utc)
+    user.last_login = datetime.now(UTC)
     await db.commit()
 
     token = create_access_token(str(user.id), user.role)
@@ -101,7 +101,7 @@ async def accept_invite(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     result = await db.execute(select(Invitation).where(Invitation.token == body.token))
     invite = result.scalar_one_or_none()
@@ -114,9 +114,12 @@ async def accept_invite(
 
     expires = invite.expires_at
     if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
+        expires = expires.replace(tzinfo=UTC)
     if now > expires:
-        raise HTTPException(status_code=status.HTTP_410_GONE, detail="Invitation has expired. Request a new one from your administrator.")
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Invitation has expired. Request a new one from your administrator.",
+        )
 
     existing = await db.execute(select(User).where(User.email == invite.email))
     if existing.scalar_one_or_none():
@@ -179,7 +182,9 @@ async def mfa_verify(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MFA is already enrolled.")
 
     if not user.mfa_secret:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MFA setup not initiated. Call /auth/mfa/setup first.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="MFA setup not initiated. Call /auth/mfa/setup first."
+        )
 
     totp = pyotp.TOTP(user.mfa_secret)
     if not totp.verify(body.code, valid_window=1):

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
-from typing import Annotated, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Annotated
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, Request
@@ -13,10 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.middleware.auth import RequireOperator, get_db, get_current_user
+from app.middleware.auth import RequireOperator, get_db
 from app.middleware.rate_limit import check_and_consume_tokens, get_redis
 from app.models.db import Query, Response, User
-from app.models.schemas import QueryRequest, QueryHistoryItem
+from app.models.schemas import QueryHistoryItem, QueryRequest
 from app.services import audit_log
 from app.services.embedder import cosine_similarity, embed_single, embed_texts
 from app.services.hitl import classify_risk, queue_for_review
@@ -30,6 +32,7 @@ from app.services.llm import (
 from app.services.retriever import rerank_chunks, retrieve_chunks
 
 router = APIRouter(prefix="/query", tags=["query"])
+logger = logging.getLogger(__name__)
 
 
 def _scrub_pii(text: str) -> str:
@@ -71,7 +74,7 @@ async def _check_semantic_cache(redis: aioredis.Redis, query_embedding: list[flo
             if sim >= settings.semantic_cache_similarity:
                 return cached
     except Exception:
-        pass
+        logger.warning("Semantic cache lookup failed", exc_info=True)
     return None
 
 
@@ -86,7 +89,7 @@ async def _store_semantic_cache(
     try:
         await redis.setex(key, settings.semantic_cache_ttl_seconds, json.dumps(payload))
     except Exception:
-        pass
+        logger.warning("Semantic cache write failed", exc_info=True)
 
 
 @router.get("/history", response_model=list[QueryHistoryItem])
@@ -101,9 +104,7 @@ async def get_query_history(
     stmt = (
         select(Query)
         .where(Query.user_id == user.id)
-        .options(
-            selectinload(Query.response).selectinload(Response.hitl_review)
-        )
+        .options(selectinload(Query.response).selectinload(Response.hitl_review))
         .order_by(Query.query_ts.desc())
         .limit(limit)
     )
@@ -111,7 +112,7 @@ async def get_query_history(
     queries = result.scalars().all()
 
     items: list[QueryHistoryItem] = []
-    for q in reversed(queries):           # oldest first for display
+    for q in reversed(queries):  # oldest first for display
         resp = q.response
         if not resp:
             continue
@@ -122,21 +123,23 @@ async def get_query_history(
                 try:
                     citations.append(CitationSchema(**c))
                 except Exception:
-                    pass
-        items.append(QueryHistoryItem(
-            query_id=q.id,
-            question=q.question_raw,
-            asked_at=q.query_ts,
-            status=q.status,
-            hitl_required=q.hitl_required,
-            answer_text=resp.answer_text,
-            final_text=review.final_text if review else None,
-            decision=review.decision if review else None,
-            reason=review.reason if review else None,
-            reviewed_at=review.reviewed_at if review else None,
-            citations=citations,
-            confidence_score=resp.confidence_score,
-        ))
+                    logger.warning("Skipping malformed citation on query %s", q.id, exc_info=True)
+        items.append(
+            QueryHistoryItem(
+                query_id=q.id,
+                question=q.question_raw,
+                asked_at=q.query_ts,
+                status=q.status,
+                hitl_required=q.hitl_required,
+                answer_text=resp.answer_text,
+                final_text=review.final_text if review else None,
+                decision=review.decision if review else None,
+                reason=review.reason if review else None,
+                reviewed_at=review.reviewed_at if review else None,
+                citations=citations,
+                confidence_score=resp.confidence_score,
+            )
+        )
 
     return items
 

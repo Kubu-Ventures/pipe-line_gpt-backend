@@ -8,13 +8,11 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     anthropic_api_key: str = ""
-    openai_api_key: str = ""
 
-    jwt_secret: str = "change-me-in-production"
+    jwt_secret: str = "change-me-in-production"  # noqa: S105 - placeholder, override via JWT_SECRET
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 480  # 8 hours — covers a full working day demo
 
-    embedding_model: str = "text-embedding-3-small"
     llm_model: str = "claude-sonnet-4-6"
 
     max_tokens_per_day: int = 100_000

@@ -1,7 +1,6 @@
 """Unit tests for data ingestion loaders."""
-from __future__ import annotations
 
-import pytest
+from __future__ import annotations
 
 from app.ingest.chunker import chunk_text
 from app.ingest.csv_loader import load_csv

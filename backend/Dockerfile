@@ -2,10 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps for fiona/shapely/pdfplumber
+# Compilers for wheels without prebuilt binaries on slim images
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gdal-bin \
-    libgdal-dev \
     gcc \
     g++ \
     && rm -rf /var/lib/apt/lists/*

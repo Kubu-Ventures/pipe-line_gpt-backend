@@ -57,7 +57,9 @@ The API will be available at `http://localhost:8000`. Interactive docs are at `h
 cd backend
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
+pip install -e ".[dev]"          # full install (includes torch via sentence-transformers)
+# or, for a lean install without the optional reranker / PII scrubber:
+pip install -r requirements-dev.txt
 ```
 
 ### 2. Start Postgres and Redis
@@ -122,8 +124,9 @@ All routes require a Bearer JWT unless noted.
 |---|---|---|---|
 | POST | `/auth/login` | Public | Authenticate and receive a JWT |
 | POST | `/auth/accept-invite` | Public | Complete registration from an invitation token |
-| POST | `/auth/mfa/setup` | Any | Generate a TOTP secret and QR URI |
-| POST | `/auth/mfa/verify` | Any | Verify a TOTP code and enable MFA |
+| GET | `/auth/me` | Any | Current user profile |
+| GET | `/auth/mfa/setup` | ENGINEER+ | Generate a TOTP secret and QR URI |
+| POST | `/auth/mfa/verify` | ENGINEER+ | Verify a TOTP code and enable MFA |
 | POST | `/query` | OPERATOR+ | Submit a question -- streams SSE response |
 | GET | `/query/history` | OPERATOR+ | Retrieve the current user's query history |
 | POST | `/ingest` | OPERATOR+ | Upload a document for async processing |
@@ -132,7 +135,7 @@ All routes require a Bearer JWT unless noted.
 | DELETE | `/ingest/{document_id}` | ENGINEER+ | Remove a document and its chunks |
 | POST | `/ingest/phmsa-sync` | OPERATOR+ | Load sample pipeline datasets for demo |
 | GET | `/review` | ENGINEER+ | Paginated HITL review queue |
-| POST | `/review/{review_id}/decision` | ENGINEER+ | Submit approve / edit / reject |
+| POST | `/review/{query_id}` | ENGINEER+ | Submit approve / edit / reject |
 | GET | `/admin/users` | ADMIN | List all users |
 | POST | `/admin/invite` | ADMIN | Send an invitation |
 | PATCH | `/admin/users/{id}/status` | ADMIN | Suspend or activate a user |
@@ -188,10 +191,18 @@ alembic -c alembic/alembic.ini downgrade -1
 ## Running tests
 
 ```bash
-pytest
+pytest tests/unit                                    # no services needed
+
+# Integration tests run against throwaway Postgres+pgvector and Redis (tmpfs, ports 55432/56379)
+docker compose -f docker-compose.test.yml up -d --wait
+export TEST_DATABASE_URL=postgresql+asyncpg://pipelinegpt:pipelinegpt@localhost:55432/pipelinegpt_test
+export TEST_REDIS_URL=redis://localhost:56379/15
+pytest --cov                                         # full suite, enforces 75% coverage floor
 ```
 
-Tests require a running Postgres and Redis instance. The test suite uses `pytest-asyncio` with `asyncio_mode = "auto"`.
+Integration tests are skipped unless `TEST_DATABASE_URL` is set. The database it names is **dropped and re-migrated** each session, so the name must contain `test`. Claude and the embedder are patched in tests, so no API key or model download is needed. `make help` lists shortcuts for all of the above.
+
+Lint and format with `ruff check .` and `ruff format .`. CI (`.github/workflows/ci.yml`) runs lint, the full test suite, and a Docker build.
 
 ## Project structure
 

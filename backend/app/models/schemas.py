@@ -1,15 +1,14 @@
 import uuid
 from datetime import datetime
-from typing import Any
 
 from pydantic import BaseModel, EmailStr, Field
 
-
 # ── Auth ──────────────────────────────────────────────────────────────────────
+
 
 class TokenResponse(BaseModel):
     access_token: str
-    token_type: str = "bearer"
+    token_type: str = "bearer"  # noqa: S105 - OAuth2 token type, not a secret
     mfa_setup_required: bool = False
 
 
@@ -47,6 +46,7 @@ class MFAVerifyRequest(BaseModel):
 
 # ── Admin / Invitations ───────────────────────────────────────────────────────
 
+
 class InviteRequest(BaseModel):
     email: EmailStr
     role: str = Field(..., pattern="^(OPERATOR|ENGINEER|ADMIN)$")
@@ -74,6 +74,7 @@ class UserListResponse(BaseModel):
 
 
 # ── Query ─────────────────────────────────────────────────────────────────────
+
 
 class QueryFilters(BaseModel):
     pipeline_segment: str | None = None
@@ -107,6 +108,7 @@ class QuerySSEChunk(BaseModel):
 
 # ── Ingest ────────────────────────────────────────────────────────────────────
 
+
 class IngestResponse(BaseModel):
     task_id: str
     document_id: str
@@ -124,16 +126,17 @@ class IngestStatusResponse(BaseModel):
 
 # ── Review (HITL) ─────────────────────────────────────────────────────────────
 
+
 class ReviewQueueItem(BaseModel):
-    id: uuid.UUID           # review_id
+    id: uuid.UUID  # review_id
     response_id: uuid.UUID
     query_id: uuid.UUID
     question_raw: str
     answer_text: str
     confidence_score: float
     citations_json: list[Citation]
-    risk_level: str         # HIGH | MEDIUM | LOW
-    status: str             # PENDING | APPROVED | REJECTED
+    risk_level: str  # HIGH | MEDIUM | LOW
+    status: str  # PENDING | APPROVED | REJECTED
     created_at: datetime
     decision: str | None = None
 
@@ -153,6 +156,7 @@ class ReviewDecisionResponse(BaseModel):
 
 
 # ── Audit ─────────────────────────────────────────────────────────────────────
+
 
 class AuditEventOut(BaseModel):
     id: uuid.UUID
@@ -176,15 +180,16 @@ class AuditListResponse(BaseModel):
 
 # ── Query history ─────────────────────────────────────────────────────────────
 
+
 class QueryHistoryItem(BaseModel):
     query_id: uuid.UUID
     question: str
     asked_at: datetime
-    status: str                   # UNDER_REVIEW | DELIVERED | REJECTED
+    status: str  # UNDER_REVIEW | DELIVERED | REJECTED
     hitl_required: bool
-    answer_text: str              # original AI answer
-    final_text: str | None = None # engineer-approved / edited text
-    decision: str | None = None   # APPROVE | EDIT | REJECT
+    answer_text: str  # original AI answer
+    final_text: str | None = None  # engineer-approved / edited text
+    decision: str | None = None  # APPROVE | EDIT | REJECT
     reason: str | None = None
     reviewed_at: datetime | None = None
     citations: list[Citation] = []
@@ -192,6 +197,7 @@ class QueryHistoryItem(BaseModel):
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
+
 
 class HealthResponse(BaseModel):
     status: str
@@ -201,6 +207,7 @@ class HealthResponse(BaseModel):
 
 
 # ── Documents ─────────────────────────────────────────────────────────────────
+
 
 class DocumentOut(BaseModel):
     id: uuid.UUID
