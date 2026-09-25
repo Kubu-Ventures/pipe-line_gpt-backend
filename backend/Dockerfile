@@ -57,6 +57,14 @@ ENV VIRTUAL_ENV=/opt/venv \
     TRANSFORMERS_OFFLINE=1 \
     APP_VERSION=${VERSION}
 
+# OCR for scanned PDFs. Language packs match the frontend's locales; trim OCR_LANGS for a
+# smaller image. OCR_LANGUAGES (runtime) picks which of them are used, default English.
+ARG OCR_LANGS="eng ara chi-sim deu fra hin jpn por rus spa"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr \
+        $(for l in ${OCR_LANGS}; do printf 'tesseract-ocr-%s ' "$l"; done) \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --home-dir /app --shell /usr/sbin/nologin app
 

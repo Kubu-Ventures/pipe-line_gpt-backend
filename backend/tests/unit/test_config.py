@@ -67,3 +67,14 @@ def test_bedrock_model_id_rejected_for_other_providers(provider):
 def test_vertex_requires_project():
     with pytest.raises(ValidationError, match="VERTEX_PROJECT_ID"):
         Settings(llm_provider="vertex", vertex_project_id="")
+
+
+@pytest.mark.parametrize("langs", ["eng", "eng+spa", "chi_sim+eng"])
+def test_ocr_languages_accepted(langs):
+    assert Settings(jwt_secret=STRONG, ocr_languages=langs).ocr_languages == langs
+
+
+@pytest.mark.parametrize("langs", ["", "eng spa", "eng;rm", "--psm"])
+def test_ocr_languages_rejects_anything_but_tesseract_codes(langs):
+    with pytest.raises(ValidationError):
+        Settings(jwt_secret=STRONG, ocr_languages=langs)

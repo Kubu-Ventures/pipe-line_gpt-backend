@@ -98,7 +98,7 @@ docker compose run --rm -v /srv/records:/import:ro api bulk-import /import --ope
 - The command only queues. The workers process the files in the background; follow progress on the Documents page or in the task monitor. Raise `WORKER_CONCURRENCY` in `.env` (about one per vCPU) to go faster.
 - Queued files are held in the `uploads` volume until they are processed, so allow free disk space of about the size of the folder.
 - Each document also gets one AI call to summarise it for the dashboard, which counts against your AI provider's usage.
-- Scanned PDFs without a text layer produce no text and are marked failed. OCR them first.
+- Scanned PDFs are read with OCR at a few seconds per page, so an archive of scans takes much longer to process than typed documents. Set `OCR_LANGUAGES` before importing if they aren't in English.
 
 ## Backups
 
@@ -143,6 +143,8 @@ This backs up the database, switches `PIPELINEGPT_VERSION`, pulls the new images
 | `JWT_SECRET`, `NEXTAUTH_SECRET`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD` | generated | Don't change after install: sessions and data access depend on them |
 | `MAX_TOKENS_PER_DAY` | `100000` | Per-user daily Claude token budget (includes reasoning tokens on models that think, e.g. Sonnet 5) |
 | `UPLOAD_MAX_BYTES` | `52428800` | Max upload size (50 MB) |
+| `OCR_ENABLED` | `true` | Read scanned PDF pages (no text layer) with OCR |
+| `OCR_LANGUAGES` | `eng` | Languages of your scanned documents, joined with `+`, e.g. `eng+spa`. Bundled: `eng ara chi_sim deu fra hin jpn por rus spa`. Each extra language slows OCR |
 | `HITL_CONFIDENCE_THRESHOLD` | `0.75` | Answers below this confidence go to engineer review |
 | `WEB_CONCURRENCY` / `WORKER_CONCURRENCY` | `2` / `2` | API processes / parallel ingestion tasks |
 | `DEMO_MODE` | `false` | Demo instances only. Never enable with real data. |
@@ -154,7 +156,8 @@ After editing `.env`, apply the changes with `docker compose up -d`.
 - **Certificate not issued:** check that DNS resolves to this server and that port 80 is reachable from the internet, then run `docker compose logs caddy`.
 - **"The AI service is misconfigured":** the provider credentials are wrong or missing (or, with Anthropic, out of credits). Run `docker compose run --rm api llm-check`: it prints the underlying reason, such as a missing IAM permission, a model not enabled in that region, or an unreadable key file. Fix `.env`, then `docker compose up -d`.
 - **API won't start after changing the provider:** the logs name the missing setting (`docker compose logs api`), e.g. `AWS_REGION must be set when LLM_PROVIDER=bedrock` or a Bedrock model ID without the `anthropic.` prefix.
-- **Uploads stuck in PROCESSING:** check `docker compose logs worker`. Large scanned PDFs without a text layer produce no text; OCR them first.
+- **Uploads stuck in PROCESSING:** check `docker compose logs worker`. Scanned PDFs are read with OCR at a few seconds per page, so a long scanned report can take a while; documents that take over 2 hours are marked failed.
+- **Scanned PDF indexed with little or garbled text:** set `OCR_LANGUAGES` to the documents' language (e.g. `eng+fra`), then delete and re-upload the document. Very faint or low-resolution scans may not be readable. Citations from OCR'd pages are labelled "Page N (OCR)"; check the original for exact figures.
 - **Locked out of an admin account (lost authenticator):** another admin can reset MFA from the admin page. If you have no other admin, run `docker compose run --rm api create-admin recovery@company.com`.
 
 ## License

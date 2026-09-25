@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _INSECURE_JWT_SECRETS = {"", "change-me-in-production", "secret", "changeme"}
@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # Where uploads wait for the worker (see services/upload_store.py). The API and the
     # worker must share it; relative paths resolve against the working directory.
     upload_dir: str = "data/uploads"
+    # OCR of scanned PDF pages (tesseract, bundled in the Docker image). Languages are
+    # tesseract codes joined with "+", e.g. "eng+spa"; each one slows OCR down.
+    ocr_enabled: bool = True
+    ocr_languages: str = Field(default="eng", pattern=r"^[a-z_]+(\+[a-z_]+)*$")
 
     hitl_confidence_threshold: float = 0.75
     top_k_retrieval: int = 12
