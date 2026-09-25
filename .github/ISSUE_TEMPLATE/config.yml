@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Kubu-Ventures/pipe-line_gpt-backend/security/advisories/new
+    about: Please report security issues privately, not as public issues.
+  - name: Frontend issues
+    url: https://github.com/Kubu-Ventures/pipe-line_gpt-frontend/issues
+    about: UI problems belong in the frontend repository.

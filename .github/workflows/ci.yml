@@ -21,6 +21,9 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uvx ruff check .
       - run: uvx ruff format --check .
+      - name: shellcheck deploy scripts
+        working-directory: .
+        run: shellcheck deploy/*.sh backend/docker-entrypoint.sh
 
   test:
     runs-on: ubuntu-latest

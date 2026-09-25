@@ -4,7 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pipelinegpt-backend"
-version = "0.1.0"
+version = "0.2.0"
+description = "RAG API for pipeline integrity data with engineer review (HITL)"
+license = "AGPL-3.0-only"
+authors = [{ name = "Collins Kubu" }]
 requires-python = ">=3.12"
 dependencies = [
     "fastapi[standard]>=0.115",

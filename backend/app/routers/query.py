@@ -50,22 +50,52 @@ HEARTBEAT_SECONDS = 10.0
 REPLAY_CHUNK_CHARS = 48
 
 
+# Personal data only. Presidio's defaults also tag ORGANIZATION, LOCATION and DATE_TIME,
+# which would redact segment IDs (e.g. "SEG-TX-4B"), cities and inspection dates —
+# exactly what integrity questions are about.
+PII_ENTITIES = [
+    "PERSON",
+    "EMAIL_ADDRESS",
+    "PHONE_NUMBER",
+    "CREDIT_CARD",
+    "IBAN_CODE",
+    "US_SSN",
+    "US_PASSPORT",
+    "US_DRIVER_LICENSE",
+    "IP_ADDRESS",
+]
+
+
 @lru_cache(maxsize=1)
 def _presidio_engines():
-    from presidio_analyzer import AnalyzerEngine
-    from presidio_anonymizer import AnonymizerEngine
+    """Build Presidio once; returns None if it (or its spaCy model) isn't available."""
+    try:
+        from presidio_analyzer import AnalyzerEngine
+        from presidio_analyzer.nlp_engine import NlpEngineProvider
+        from presidio_anonymizer import AnonymizerEngine
 
-    return AnalyzerEngine(), AnonymizerEngine()
+        nlp = NlpEngineProvider(
+            nlp_configuration={
+                "nlp_engine_name": "spacy",
+                "models": [{"lang_code": "en", "model_name": settings.pii_spacy_model}],
+            }
+        ).create_engine()
+        return AnalyzerEngine(nlp_engine=nlp, supported_languages=["en"]), AnonymizerEngine()
+    except ImportError:
+        return None
+    except BaseException:  # spaCy raises SystemExit when a model is missing and can't be downloaded
+        logger.warning("PII scrubbing disabled: could not load spaCy model %s", settings.pii_spacy_model, exc_info=True)
+        return None
 
 
 def _scrub_pii(text: str) -> str:
-    """Run Microsoft Presidio PII scrubber on user input (no-op if Presidio isn't installed)."""
-    try:
-        analyzer, anonymizer = _presidio_engines()
-    except ImportError:
+    """Replace personal data in the question before it is embedded or sent to the LLM."""
+    engines = _presidio_engines()
+    if engines is None:
         return text
+    analyzer, anonymizer = engines
     try:
-        results = analyzer.analyze(text=text, language="en")
+        results = analyzer.analyze(text=text, language="en", entities=PII_ENTITIES)
         return anonymizer.anonymize(text=text, analyzer_results=results).text
     except Exception:
         logger.warning("PII scrub failed; using raw question", exc_info=True)

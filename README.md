@@ -1,5 +1,8 @@
 # PipelineGPT Backend
 
+[![CI](https://github.com/Kubu-Ventures/pipe-line_gpt-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Kubu-Ventures/pipe-line_gpt-backend/actions/workflows/ci.yml)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+
 A FastAPI backend that powers a retrieval-augmented generation (RAG) interface for pipeline integrity data. Operators and engineers ask questions in plain English against their own document corpus -- ILI reports, SCADA exports, PHMSA incident records, and compliance schedules -- and receive cited, source-grounded answers in real time.
 
 ## How it works
@@ -32,7 +35,13 @@ A FastAPI backend that powers a retrieval-augmented generation (RAG) interface f
 - Python 3.12, PostgreSQL 16 with the `pgvector` extension, and Redis 7 for local development
 - An [Anthropic API key](https://console.anthropic.com/)
 
-## Quick start with Docker Compose
+## Self-hosting in production
+
+Pipeline operators run PipelineGPT on their own infrastructure. Download the deploy bundle from the [latest release](https://github.com/Kubu-Ventures/pipe-line_gpt-backend/releases/latest) and run `./install.sh`: it sets up HTTPS, generates secrets, starts the stack and creates the first admin. See **[deploy/README.md](deploy/README.md)** for requirements, backups, upgrades and configuration.
+
+The sections below are for **development**.
+
+## Quick start with Docker Compose (development)
 
 ```bash
 # 1. Clone and enter the backend directory
@@ -248,3 +257,17 @@ backend/
 ├── Dockerfile
 └── pyproject.toml
 ```
+
+## Contributing
+
+Bug reports and feature requests are welcome as issues; code contributions aren't being accepted yet (see [CONTRIBUTING.md](CONTRIBUTING.md)). Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report security issues privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+Copyright (C) 2026 Collins Kubu
+
+This program is free software: you can redistribute it and/or modify it under the terms of the [GNU Affero General Public License](LICENSE) as published by the Free Software Foundation, version 3.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+Commercial licenses (for use outside the AGPL's terms) and support are available from the author.

@@ -1,0 +1,49 @@
+name: Bug report
+description: Something isn't working as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security issue?** Don't file it here; use [private reporting](https://github.com/Kubu-Ventures/pipe-line_gpt-backend/security/advisories/new).
+        Please remove any confidential pipeline data from logs and screenshots.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Sign in as an operator
+        2. Ask "..."
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`PIPELINEGPT_VERSION` from deploy/.env, or the commit if running from source."
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How are you running PipelineGPT?
+      options:
+        - deploy/ bundle (docker compose)
+        - From source (development)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: "`docker compose logs api worker --since 30m` (redact secrets and data)."
+      render: shell

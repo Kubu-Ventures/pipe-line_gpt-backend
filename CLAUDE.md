@@ -18,7 +18,7 @@ source .venv/bin/activate                 # uv-managed venv at backend/.venv
 uv pip install -r requirements-dev.txt    # lean (what CI uses); `-e ".[dev]"` adds torch/presidio
 
 docker compose up db redis -d             # infra only (pgvector/pg16 + redis 7)
-docker compose up --build                 # full stack; API is exposed on host port 8001, not 8000
+docker compose up --build                 # full dev stack from source (API on :8000)
 alembic -c alembic/alembic.ini upgrade head
 alembic -c alembic/alembic.ini revision --autogenerate -m "msg"   # after editing app/models/db.py
 
@@ -69,6 +69,14 @@ pytest tests/integration/test_query_flow.py::test_semantic_cache_hit -q   # sing
 **Config** (`app/config.py`): `ENVIRONMENT=production` fails startup on a weak `JWT_SECRET` or a missing `ANTHROPIC_API_KEY`, hides `/docs`, and adds HSTS. `DEMO_MODE` gates `seed_demo.py`, `/ingest/phmsa-sync`, and the demo MFA bypass (the frontend's matching flag is `NEXT_PUBLIC_DEMO_MODE`). `CORS_ORIGINS` is comma-separated.
 
 **Data model** (`models/db.py`): User, Invitation, Document, Chunk (`Vector(384)`), Query → Response (1:1) → HITLReview (1:1), plus an append-only AuditEvent written via `services/audit_log.log_event`. The schema is Alembic-only; the app lifespan never calls `create_all`. If you change the embedding model or dimension, you need a migration (see `0003_embedding_dim_384.py`) plus re-ingestion.
+
+## Distribution (self-hosted, AGPL-3.0)
+
+- **One backend image, many roles:** `backend/Dockerfile` builds a single image; `docker-entrypoint.sh` dispatches `api` (migrates, then uvicorn with proxy headers), `worker`, `flower`, `migrate`, `create-admin <email>`. It runs as a non-root user with CPU-only torch. The fastembed, cross-encoder and spaCy `en_core_web_sm` models are baked in and `HF_HUB_OFFLINE=1`, so **nothing may download models at runtime**.
+- **`deploy/` is what customers run:** a compose stack with Caddy (TLS) routing `/` to the frontend and `/backend/*` to the API, so the frontend image is domain-agnostic. Postgres and Redis sit on an `internal` network. It also holds the `install.sh`, `backup.sh`, `restore.sh` and `upgrade.sh` scripts, and `README.md`, the operator guide.
+- **Releases:** pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`, which pushes `ghcr.io/kubu-ventures/pipelinegpt-backend` and creates a GitHub Release with the deploy tarball. The frontend repo tags the same version for its image.
+- **Copyright holder:** Collins Kubu, sole author. No company is named anywhere in licensing or builds; commercial licenses and support are offered by the author directly. Outside code contributions are not accepted yet (no CLA). `CHANGELOG.md` follows Keep a Changelog; PRs use conventional-commit titles and the PR template.
+- **PII scrubbing** is limited to `PII_ENTITIES` in `routers/query.py`. Presidio's defaults would redact segment IDs, places and dates.
 
 ## Gotchas
 
