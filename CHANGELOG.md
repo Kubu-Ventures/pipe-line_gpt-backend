@@ -7,6 +7,7 @@ All notable changes to PipelineGPT are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `bulk-import --skip-summaries` leaves out the per-document Claude summary that feeds the dashboard, saving one AI call per document on large archives. Skipped documents are still fully searchable; the dashboard neither fills in nor refreshes their summaries.
 - `bulk-import` command to queue a whole folder of documents (e.g. decades of records) instead of uploading them one at a time. It streams files of any size up to `--max-mb`, skips files already ingested, and can be re-run after an interruption. See "Importing an archive" in `deploy/README.md`.
 - Scanned PDFs are now read with OCR (Tesseract, bundled in the image), page by page wherever a page has no text layer. Citations from those pages are labelled "Page N (OCR)" and the ingest audit event records how many pages were OCR'd. `OCR_LANGUAGES` selects the languages (default `eng`; packs for all ten UI languages are bundled), `OCR_ENABLED=false` turns it off.
 

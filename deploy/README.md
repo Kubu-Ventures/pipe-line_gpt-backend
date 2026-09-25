@@ -97,7 +97,7 @@ docker compose run --rm -v /srv/records:/import:ro api bulk-import /import --ope
 - Each document is listed under its path inside the folder (e.g. `2009/ILI/segment-14.pdf`), which shows up in citations.
 - The command only queues. The workers process the files in the background; follow progress on the Documents page or in the task monitor. Raise `WORKER_CONCURRENCY` in `.env` (about one per vCPU) to go faster.
 - Queued files are held in the `uploads` volume until they are processed, so allow free disk space of about the size of the folder.
-- Each document also gets one AI call to summarise it for the dashboard, which counts against your AI provider's usage.
+- Each document also gets one AI call to summarise it for the dashboard, which counts against your AI provider's usage. For a large archive, add `--skip-summaries` to leave that out: the documents are still fully searchable in chat, but don't feed the dashboard's attention items and document summaries (its "Refresh" leaves them out too).
 - Scanned PDFs are read with OCR at a few seconds per page, so an archive of scans takes much longer to process than typed documents. Set `OCR_LANGUAGES` before importing if they aren't in English.
 
 ## Backups

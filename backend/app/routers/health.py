@@ -210,18 +210,21 @@ async def refresh_insights(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> dict:
-    """Re-run insight extraction for ALL completed documents. Engineer/Admin only."""
+    """Re-run insight extraction for all completed documents, except those ingested with
+    summaries skipped (bulk-import --skip-summaries). Engineer/Admin only."""
     if current_user.role not in ("ENGINEER", "ADMIN"):
         from fastapi import HTTPException
 
         raise HTTPException(status_code=403, detail="Engineer or Admin required")
 
-    from app.services.insights import extract_document_insights
+    from app.services.insights import extract_document_insights, is_skipped
 
     docs_result = await db.execute(select(Document).where(Document.status == "COMPLETED"))
     docs = docs_result.scalars().all()
     refreshed = 0
     for doc in docs:
+        if is_skipped(doc.insights_json):
+            continue
         chunks_result = await db.execute(
             select(Chunk).where(Chunk.document_id == doc.id).order_by(Chunk.chunk_index).limit(8)
         )

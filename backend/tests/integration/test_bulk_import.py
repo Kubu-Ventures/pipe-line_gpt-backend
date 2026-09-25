@@ -30,12 +30,15 @@ def make_archive(root):
 
 
 def dispatcher():
-    calls: list[tuple] = []
+    calls: list[tuple] = []  # positional args of each dispatch
+    options: list[dict] = []  # keyword args of each dispatch
 
-    def delay(*args):
+    def delay(*args, **kwargs):
         calls.append(args)
+        options.append(kwargs)
         return SimpleNamespace(id=f"task-{len(calls)}")
 
+    delay.options = options
     return delay, calls
 
 
@@ -51,6 +54,7 @@ async def run(db_session, root, **kwargs):
         report=lambda name, outcome, _detail: reported.__setitem__(name, outcome),
         **kwargs,
     )
+    run.last_options = delay.options
     return counts, calls, reported
 
 
@@ -116,3 +120,18 @@ async def test_file_already_uploaded_through_the_ui_is_a_duplicate(db_session, t
     counts, calls, _ = await run(db_session, tmp_path)
     assert dict(counts) == {"duplicate": 1}
     assert calls == []
+
+
+async def test_summaries_are_requested_unless_skipped(db_session, tmp_path):
+    make_archive(tmp_path)
+    await run(db_session, tmp_path)
+    assert run.last_options == [{"summarize": True}] * 3
+
+
+async def test_skip_summaries_is_passed_to_every_task_and_audited(db_session, tmp_path):
+    make_archive(tmp_path)
+    await run(db_session, tmp_path, summarize=False)
+    assert run.last_options == [{"summarize": False}] * 3
+
+    audit = (await db_session.execute(select(AuditEvent).where(AuditEvent.event_type == "INGEST_SUBMITTED"))).scalars()
+    assert {e.payload_json["summarize"] for e in audit.all()} == {False}

@@ -72,14 +72,16 @@ async def import_folder(
     db: AsyncSession,
     root: Path,
     *,
-    dispatch: Callable[[str, str, str], object],
+    dispatch: Callable[..., object],
     operator_id: str,
     max_bytes: int,
+    summarize: bool = True,
     dry_run: bool = False,
     report: Callable[[str, str, str], None] = lambda _name, _outcome, _detail: None,
 ) -> Counter:
-    """Queue the files under root. dispatch(document_id, source_type, filename) must
-    return an object with an .id (the Celery task). Returns a count of each outcome."""
+    """Queue the files under root. dispatch(document_id, source_type, filename, summarize=...)
+    must return an object with an .id (the Celery task). summarize=False skips the per-document
+    Claude summary. Returns a count of each outcome."""
     counts: Counter = Counter()
     seen_in_run: dict[str, str] = {}  # sha256 -> name
     root = await asyncio.to_thread(root.resolve)
@@ -133,13 +135,19 @@ async def import_folder(
             report(name, DUPLICATE, "same content was just ingested")
             continue
 
-        task = dispatch(doc_id, source_type, name)
+        task = dispatch(doc_id, source_type, name, summarize=summarize)
         await audit_log.log_event(
             db,
             event_type="INGEST_SUBMITTED",
             target_id=doc_id,
             target_type="document",
-            payload={"filename": name, "source_type": source_type, "task_id": task.id, "via": "bulk_import"},
+            payload={
+                "filename": name,
+                "source_type": source_type,
+                "task_id": task.id,
+                "via": "bulk_import",
+                "summarize": summarize,
+            },
         )
         counts[QUEUED] += 1
         report(name, QUEUED, source_type)

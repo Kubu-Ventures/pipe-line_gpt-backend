@@ -57,6 +57,16 @@ DOCUMENT CHUNKS:
 {chunks}"""
 
 
+# Stored as insights_json when a document was ingested without a summary (bulk-import
+# --skip-summaries). Unlike NULL it is not filled in lazily by the dashboard, and the
+# dashboard refresh leaves it alone, so skipping really saves the Claude calls.
+SKIPPED: dict = {"skipped": True}
+
+
+def is_skipped(insights: dict | None) -> bool:
+    return bool(insights and insights.get("skipped"))
+
+
 async def extract_document_insights(filename: str, chunks: list[dict]) -> dict:
     """
     Send the first 8 chunks to Claude and return structured intelligence as a dict.
