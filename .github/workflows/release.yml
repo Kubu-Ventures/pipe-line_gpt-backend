@@ -1,0 +1,66 @@
+name: Release
+
+# Push a tag like v0.2.0 to publish:
+#   - ghcr.io/kubu-ventures/pipelinegpt-backend:{0.2.0, 0.2, latest}
+#   - a GitHub Release with the deploy bundle (pipelinegpt-deploy-0.2.0.tar.gz)
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/kubu-ventures/pipelinegpt-backend
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+  release:
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package deploy bundle
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "$version" > deploy/VERSION
+          sed -i "s/^PIPELINEGPT_VERSION=.*/PIPELINEGPT_VERSION=${version}/" deploy/.env.example
+          cp LICENSE deploy/
+          tar -czf "pipelinegpt-deploy-${version}.tar.gz" --transform "s,^deploy,pipelinegpt," deploy
+          sha256sum "pipelinegpt-deploy-${version}.tar.gz" > "pipelinegpt-deploy-${version}.tar.gz.sha256"
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          flags=""
+          [[ "$version" == *-* ]] && flags="--prerelease"
+          gh release create "$GITHUB_REF_NAME" $flags --title "PipelineGPT ${version}" --generate-notes \
+            "pipelinegpt-deploy-${version}.tar.gz" "pipelinegpt-deploy-${version}.tar.gz.sha256"

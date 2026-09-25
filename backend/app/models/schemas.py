@@ -205,7 +205,7 @@ class HealthResponse(BaseModel):
     status: str
     database: str
     redis: str
-    version: str = "0.1.0"
+    version: str
 
 
 # ── Documents ─────────────────────────────────────────────────────────────────

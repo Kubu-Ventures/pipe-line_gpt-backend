@@ -9,6 +9,9 @@ _INSECURE_JWT_SECRETS = {"", "change-me-in-production", "secret", "changeme"}
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # Set by the Docker image at build time (release tag).
+    app_version: str = "0.2.0-dev"
+
     # "production" turns on fail-fast secret checks, HSTS, and hides /docs.
     environment: Literal["development", "test", "production"] = "development"
     # Demo deployments only: allows the seeded demo accounts and their pre-enrolled MFA bypass.
@@ -37,6 +40,8 @@ class Settings(BaseSettings):
     login_lockout_seconds: int = 900
 
     llm_model: str = "claude-sonnet-4-6"
+    # spaCy model Presidio uses for PII detection (bundled in the Docker image).
+    pii_spacy_model: str = "en_core_web_sm"
 
     max_tokens_per_day: int = 100_000
     upload_max_bytes: int = 52_428_800  # 50 MB

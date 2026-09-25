@@ -1,3 +1,4 @@
+# Development stack built from source. For production use deploy/ (see deploy/README.md).
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -24,7 +25,7 @@ services:
   backend:
     build: .
     ports:
-      - "8001:8000"
+      - "8000:8000"
     env_file:
       - .env
     environment:
@@ -35,9 +36,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: >
-      sh -c "alembic -c alembic/alembic.ini upgrade head &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    command: ["api"]   # applies migrations, then serves on :8000
 
   celery_worker:
     build: .
@@ -51,7 +50,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=4
+    command: ["worker"]
 
   flower:
     build: .
@@ -63,7 +62,7 @@ services:
       REDIS_URL: redis://redis:6379/0
     depends_on:
       - redis
-    command: celery -A app.tasks.celery_app.celery_app flower --port=5555
+    command: ["flower"]
 
 volumes:
   pgdata:

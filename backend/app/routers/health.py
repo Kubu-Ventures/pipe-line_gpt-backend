@@ -9,6 +9,7 @@ from fastapi import Response as FastAPIResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.middleware.auth import get_current_user, get_db
 from app.middleware.rate_limit import get_redis
 from app.models.db import AuditEvent, Chunk, Document, HITLReview, Query, Response, User
@@ -44,7 +45,12 @@ async def health_check(response: FastAPIResponse, db: Annotated[AsyncSession, De
     healthy = db_status == "ok" and redis_status == "ok"
     if not healthy:
         response.status_code = 503
-    return HealthResponse(status="ok" if healthy else "degraded", database=db_status, redis=redis_status)
+    return HealthResponse(
+        status="ok" if healthy else "degraded",
+        database=db_status,
+        redis=redis_status,
+        version=settings.app_version,
+    )
 
 
 @router.get("/health/stats")

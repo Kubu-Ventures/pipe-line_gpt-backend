@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="PipelineGPT API",
     description="AI-powered natural language interface for pipeline integrity data.",
-    version="0.1.0",
+    version=settings.app_version,
     lifespan=lifespan,
     docs_url=None if settings.is_production else "/docs",
     redoc_url=None if settings.is_production else "/redoc",

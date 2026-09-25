@@ -1,0 +1,34 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$PIPELINEGPT_DOMAIN} {
+	encode zstd gzip
+
+	# Keep uploads a little above UPLOAD_MAX_BYTES (50 MB default) so the API returns the error.
+	request_body {
+		max_size 60MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# Prometheus metrics stay on the internal network (scrape api:8000/metrics).
+	@metrics path /backend/metrics /backend/metrics/*
+	respond @metrics 404
+
+	handle_path /backend/* {
+		reverse_proxy api:8000 {
+			# Answers are sent as Server-Sent Events: don't buffer them.
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy frontend:3000
+	}
+}
