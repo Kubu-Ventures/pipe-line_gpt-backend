@@ -20,7 +20,15 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://pipelinegpt:pipelinegpt@localhost:5432/pipelinegpt"
     redis_url: str = "redis://localhost:6379/0"
 
+    # Where Claude runs. bedrock/vertex keep prompts and document excerpts inside the
+    # customer's own AWS or Google Cloud account; credentials come from that cloud's
+    # standard chain (IAM role / AWS_PROFILE / AWS_ACCESS_KEY_ID, or
+    # GOOGLE_APPLICATION_CREDENTIALS), never from this app's settings.
+    llm_provider: Literal["anthropic", "bedrock", "vertex"] = "anthropic"
     anthropic_api_key: str = ""
+    aws_region: str = ""
+    vertex_project_id: str = ""
+    vertex_region: str = "global"
 
     jwt_secret: str = "change-me-in-production"  # noqa: S105 - placeholder, rejected in production
     jwt_algorithm: str = "HS256"
@@ -61,6 +69,28 @@ class Settings(BaseSettings):
         return v
 
     @model_validator(mode="after")
+    def _llm_provider_guards(self) -> "Settings":
+        # Checked in every environment: a wrong model ID or missing region only
+        # surfaces on the first question otherwise.
+        is_bedrock_id = self.llm_model.startswith("anthropic.")
+        if self.llm_provider == "bedrock":
+            if not self.aws_region:
+                raise ValueError("AWS_REGION must be set when LLM_PROVIDER=bedrock")
+            if not is_bedrock_id:
+                raise ValueError(
+                    f"LLM_MODEL={self.llm_model!r} is not a Bedrock model ID; use the "
+                    f"'anthropic.' prefix, e.g. anthropic.claude-sonnet-5"
+                )
+        elif is_bedrock_id:
+            raise ValueError(
+                f"LLM_MODEL={self.llm_model!r} is a Bedrock model ID but LLM_PROVIDER={self.llm_provider}; "
+                "drop the 'anthropic.' prefix"
+            )
+        if self.llm_provider == "vertex" and not self.vertex_project_id:
+            raise ValueError("VERTEX_PROJECT_ID must be set when LLM_PROVIDER=vertex")
+        return self
+
+    @model_validator(mode="after")
     def _production_guards(self) -> "Settings":
         if self.environment == "production":
             if self.jwt_secret in _INSECURE_JWT_SECRETS or len(self.jwt_secret) < 32:
@@ -68,8 +98,8 @@ class Settings(BaseSettings):
                     "JWT_SECRET must be set to a random value of at least 32 characters in production "
                     '(e.g. python -c "import secrets; print(secrets.token_urlsafe(48))")'
                 )
-            if not self.anthropic_api_key:
-                raise ValueError("ANTHROPIC_API_KEY must be set in production")
+            if self.llm_provider == "anthropic" and not self.anthropic_api_key:
+                raise ValueError("ANTHROPIC_API_KEY must be set in production when LLM_PROVIDER=anthropic")
         return self
 
     @property

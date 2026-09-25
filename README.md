@@ -5,10 +5,21 @@
 
 A FastAPI backend that powers a retrieval-augmented generation (RAG) interface for pipeline integrity data. Operators and engineers ask questions in plain English against their own document corpus -- ILI reports, SCADA exports, PHMSA incident records, and compliance schedules -- and receive cited, source-grounded answers in real time.
 
+## Why PipelineGPT
+
+- **No action without an engineer.** Every answer is written and risk-classified before anyone sees it. Answers that recommend an operational action (repair, shut-in, pressure reduction, evacuation) are held until a qualified engineer approves, edits or rejects them. An operator never sees an unreviewed recommendation.
+- **Every claim is traceable.** Answers cite the exact passages they rely on (`[SRC-001]` …), so an engineer can check them against the source ILI report, SCADA export or PHMSA record.
+- **Your data stays under your control.** PipelineGPT is self-hosted on the operator's own server. Document parsing, embeddings, search, reranking and personal-data scrubbing all run locally. Only answer generation calls Claude, through the provider you choose: the Anthropic API, **AWS Bedrock** in your AWS account, or **Google Vertex AI** in your Google Cloud project.
+- **An audit trail built for regulated work.** Sign-ins, questions, uploads, deletions and every engineer decision are written to an append-only log with who, when and from where, and can be exported as CSV for internal or regulatory audits.
+- **Built for pipeline integrity data.** Understands ILI reports, SCADA exports, PHMSA incident data and integrity-management schedules, and is instructed to answer strictly from your documents and to say so when they don't contain the answer.
+- **Secure by default.** Invite-only access, three roles (operator, engineer, admin), mandatory MFA for engineers and admins, brute-force lockout, and production start-up checks that refuse weak secrets.
+- **Multilingual.** The interface ships in 10 languages, and answers come back in the language the question was asked in.
+- **Open and inspectable.** AGPL-3.0: your security team can read every line that touches your data.
+
 ## How it works
 
 1. **Ingest** -- Documents (PDF, CSV, PHMSA TSV/ZIP) are uploaded and dispatched to an async Celery worker. The worker parses, chunks, and embeds each document using `BAAI/bge-small-en-v1.5` (384-dim, local ONNX inference via `fastembed`) and stores vectors in PostgreSQL via `pgvector`.
-2. **Query** -- At query time the user's question is expanded into alternative phrasings via Claude, embedded, and used for cosine similarity search across the vector store. Candidate chunks are reranked with a cross-encoder (`ms-marco-MiniLM-L-6-v2`). The top passages are assembled into a cited context block and streamed back through Claude via Server-Sent Events.
+2. **Query** -- At query time the user's question is expanded into alternative phrasings via Claude, embedded, and used for cosine similarity search across the vector store. Candidate chunks are reranked with a cross-encoder (`ms-marco-MiniLM-L-6-v2`). The top passages are assembled into a cited context block and Claude (via the Anthropic API, AWS Bedrock or Google Vertex AI) writes the answer, which is risk-classified before it is sent to the client over Server-Sent Events.
 3. **HITL review** -- Any answer that contains operational directives (repair, shut-in, pressure reduction, evacuation) or falls below the confidence threshold is held in a review queue. A qualified engineer must approve, edit, or reject the response before it is delivered to the operator.
 4. **Audit** -- Every query, document ingestion, HITL decision, and deletion is written to an append-only audit log with actor identity, timestamp, and IP address.
 
@@ -23,7 +34,7 @@ A FastAPI backend that powers a retrieval-augmented generation (RAG) interface f
 | Task queue | Celery 5 |
 | Embeddings | fastembed (BAAI/bge-small-en-v1.5, 384-dim, local ONNX) |
 | Reranking | sentence-transformers cross-encoder/ms-marco-MiniLM-L-6-v2 |
-| LLM | Anthropic Claude (claude-sonnet-4-6) |
+| LLM | Anthropic Claude via the Anthropic API (default `claude-sonnet-4-6`), AWS Bedrock (`anthropic.claude-sonnet-5`) or Google Vertex AI |
 | Auth | JWT (python-jose) + bcrypt + TOTP MFA (pyotp) |
 | PII scrubbing | Microsoft Presidio |
 | Migrations | Alembic |
@@ -33,7 +44,7 @@ A FastAPI backend that powers a retrieval-augmented generation (RAG) interface f
 
 - Docker and Docker Compose, **or**
 - Python 3.12, PostgreSQL 16 with the `pgvector` extension, and Redis 7 for local development
-- An [Anthropic API key](https://console.anthropic.com/)
+- Access to Claude through **one** of: an [Anthropic API key](https://console.anthropic.com/), AWS Bedrock (Claude enabled in your AWS account), or Google Vertex AI (Claude enabled in your Google Cloud project). See [Choosing the AI provider](deploy/README.md#choosing-the-ai-provider).
 
 ## Self-hosting in production
 
@@ -50,7 +61,7 @@ cd pipe-line_gpt-backend/backend
 
 # 2. Create your environment file
 cp .env.example .env
-# Edit .env and set ANTHROPIC_API_KEY and JWT_SECRET at minimum
+# Edit .env and set JWT_SECRET and your AI provider (ANTHROPIC_API_KEY by default) at minimum
 
 # 3. Start all services (Postgres, Redis, API, Celery worker, Flower)
 docker compose up --build
@@ -94,11 +105,14 @@ Set the following values in `.env`:
 | `LOGIN_MAX_FAILURES` / `LOGIN_LOCKOUT_SECONDS` | Brute-force lockout per email (4x per IP) | `5` / `900` |
 | `DATABASE_URL` | asyncpg connection string | `postgresql+asyncpg://pipelinegpt:pipelinegpt@localhost:5432/pipelinegpt` |
 | `REDIS_URL` | Redis connection string | `redis://localhost:6379/0` |
-| `ANTHROPIC_API_KEY` | Anthropic API key | _(required)_ |
+| `LLM_PROVIDER` | Where Claude runs: `anthropic`, `bedrock` or `vertex` | `anthropic` |
+| `ANTHROPIC_API_KEY` | Anthropic API key | _(required with `anthropic`)_ |
+| `AWS_REGION` | Bedrock region; credentials come from the standard AWS chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, IAM role) | _(required with `bedrock`)_ |
+| `VERTEX_PROJECT_ID` / `VERTEX_REGION` | Vertex project and region; credentials from Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`) | _(project required with `vertex`)_ / `global` |
 | `JWT_SECRET` | Secret used to sign JWT tokens | _(required -- 32+ random characters; production refuses to start otherwise)_ |
 | `JWT_ALGORITHM` | JWT signing algorithm | `HS256` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Token lifetime | `480` |
-| `LLM_MODEL` | Claude model ID | `claude-sonnet-4-6` |
+| `LLM_MODEL` | Claude model ID. Bedrock IDs take an `anthropic.` prefix (`anthropic.claude-sonnet-5`) | `claude-sonnet-4-6` |
 | `HITL_CONFIDENCE_THRESHOLD` | Confidence below which HITL is triggered | `0.75` |
 | `TOP_K_RETRIEVAL` | Number of chunks fetched from vector store | `12` |
 | `TOP_K_RERANK` | Number of chunks kept after reranking | `6` |
@@ -180,6 +194,7 @@ The final event sets `"done": true` and includes the full `citations` array:
 
 ## Security model
 
+- **Data flow:** Embeddings, retrieval, reranking and PII scrubbing run on the server. Only the scrubbed question and the retrieved excerpts are sent to the configured Claude provider. With Bedrock or Vertex that stays within the customer's cloud account. Check the configured provider with `python check_llm.py`.
 - **MFA:** Engineers and admins must enroll TOTP. Until they do, their session can only reach the enrollment screen. Enrolled users need a code at every sign-in, and codes are single-use. Admins can reset a user's MFA if they lose their device.
 - **HITL hold:** Every answer is generated and risk-classified server-side before any text reaches the operator. Flagged answers are withheld until an engineer approves or edits them, rejected answers are never shown, and only delivered answers are cached.
 - **Sessions:** Suspended users are cut off on their next request. Failed sign-ins lock the account (and IP) for 15 minutes after repeated attempts, and are audited.
@@ -243,7 +258,7 @@ backend/
 │   ├── services/
 │   │   ├── embedder.py    # fastembed wrapper + cosine similarity
 │   │   ├── retriever.py   # pgvector search + cross-encoder reranking
-│   │   ├── llm.py         # Claude streaming, query expansion, citation extraction
+│   │   ├── llm.py         # Claude client per provider, answers, query expansion, citations
 │   │   ├── hitl.py        # Risk classification + HITL queue logic
 │   │   └── audit_log.py   # Append-only event logging
 │   ├── tasks/

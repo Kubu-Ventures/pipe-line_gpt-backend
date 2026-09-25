@@ -35,3 +35,35 @@ def test_development_allows_defaults():
 def test_cors_origins_from_comma_separated_env(monkeypatch):
     monkeypatch.setenv("CORS_ORIGINS", "https://a.example, https://b.example")
     assert Settings().cors_origins == ["https://a.example", "https://b.example"]
+
+
+def test_production_with_cloud_provider_needs_no_anthropic_key():
+    s = Settings(
+        environment="production",
+        jwt_secret=STRONG,
+        llm_provider="bedrock",
+        aws_region="us-east-1",
+        llm_model="anthropic.claude-sonnet-5",
+    )
+    assert s.llm_provider == "bedrock"
+
+
+def test_bedrock_requires_region():
+    with pytest.raises(ValidationError, match="AWS_REGION"):
+        Settings(llm_provider="bedrock", aws_region="", llm_model="anthropic.claude-sonnet-5")
+
+
+def test_bedrock_requires_prefixed_model_id():
+    with pytest.raises(ValidationError, match="anthropic.claude-sonnet-5"):
+        Settings(llm_provider="bedrock", aws_region="us-east-1", llm_model="claude-sonnet-4-6")
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "vertex"])
+def test_bedrock_model_id_rejected_for_other_providers(provider):
+    with pytest.raises(ValidationError, match="Bedrock model ID"):
+        Settings(llm_provider=provider, vertex_project_id="p", llm_model="anthropic.claude-sonnet-5")
+
+
+def test_vertex_requires_project():
+    with pytest.raises(ValidationError, match="VERTEX_PROJECT_ID"):
+        Settings(llm_provider="vertex", vertex_project_id="")

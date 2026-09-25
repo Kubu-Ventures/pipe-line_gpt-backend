@@ -1,0 +1,17 @@
+# Added on top of docker-compose.yml when LLM_PROVIDER=vertex: mounts the Google Cloud
+# service-account key. install.sh enables it via COMPOSE_FILE in .env, so every
+# `docker compose ...` command in this directory picks it up automatically.
+x-vertex: &vertex
+  environment:
+    GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp-key.json
+  volumes:
+    - type: bind
+      source: ./secrets/gcp-key.json
+      target: /run/secrets/gcp-key.json
+      read_only: true
+      bind:
+        create_host_path: false
+
+services:
+  api: *vertex
+  worker: *vertex

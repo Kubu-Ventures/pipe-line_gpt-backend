@@ -14,7 +14,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg",
     "pgvector",
-    "anthropic>=0.40",
+    "anthropic[bedrock,vertex]>=0.112",
     "pydantic-settings>=2.7",
     "celery[redis]",
     "flower",

@@ -50,6 +50,8 @@ async def health_check(response: FastAPIResponse, db: Annotated[AsyncSession, De
         database=db_status,
         redis=redis_status,
         version=settings.app_version,
+        llm_provider=settings.llm_provider,
+        llm_model=settings.llm_model,
     )
 
 

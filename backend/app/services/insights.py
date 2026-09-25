@@ -4,9 +4,8 @@ import json
 import re
 from datetime import date
 
-import anthropic
-
 from app.config import settings
+from app.services.llm import make_client, response_text
 
 _PROMPT = """You are a pipeline integrity analyst. Analyse the document chunks below and extract structured operational intelligence.
 
@@ -72,13 +71,14 @@ async def extract_document_insights(filename: str, chunks: list[dict]) -> dict:
     prompt = _PROMPT.format(chunks=chunk_text, today=date.today().isoformat())
 
     try:
-        client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-        response = await client.messages.create(
-            model=settings.llm_model,
-            max_tokens=1200,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = response.content[0].text.strip()
+        # Runs inside a Celery task's own event loop: use a fresh client, never the cached one.
+        async with make_client() as client:
+            response = await client.messages.create(
+                model=settings.llm_model,
+                max_tokens=8000,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        raw = response_text(response).strip()
         # Strip markdown fences if the model added them despite instructions
         raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
         raw = re.sub(r"\s*```\s*$", "", raw, flags=re.MULTILINE)
