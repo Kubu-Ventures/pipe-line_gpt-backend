@@ -25,15 +25,60 @@ Return only the alternative questions, one per line, no numbering or bullets.
 Original query: {question}"""
 
 
+LLMClient = anthropic.AsyncAnthropic | anthropic.AsyncAnthropicBedrockMantle | anthropic.AsyncAnthropicVertex
+
+_CLIENT_OPTIONS = {"timeout": 120.0, "max_retries": 2}
+
+
+def make_client() -> LLMClient:
+    """New client for the configured provider. All three expose the same messages API.
+
+    Celery tasks each run in their own event loop, so they must call this (and close the
+    client) rather than share the cached `get_client()` of the API process.
+    """
+    if settings.llm_provider == "bedrock":
+        # Credentials: the standard AWS chain (instance/task role, AWS_PROFILE, AWS_ACCESS_KEY_ID).
+        return anthropic.AsyncAnthropicBedrockMantle(aws_region=settings.aws_region, **_CLIENT_OPTIONS)
+    if settings.llm_provider == "vertex":
+        # Credentials: Google Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS).
+        return anthropic.AsyncAnthropicVertex(
+            project_id=settings.vertex_project_id, region=settings.vertex_region, **_CLIENT_OPTIONS
+        )
+    return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, **_CLIENT_OPTIONS)
+
+
 @lru_cache(maxsize=1)
-def get_client() -> anthropic.AsyncAnthropic:
+def get_client() -> LLMClient:
     """Shared client so HTTP connections are pooled across requests."""
-    return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=120.0, max_retries=2)
+    return make_client()
+
+
+def _is_cloud_credential_error(exc: Exception) -> bool:
+    """AWS/Google credential failures raise before any request is sent, outside the SDK's
+    error hierarchy. Matched by module so neither library has to be importable."""
+    # The SDK's own Bedrock auth raises a bare RuntimeError when the AWS chain finds nothing.
+    if isinstance(exc, RuntimeError) and str(exc).startswith("Could not resolve AWS credentials"):
+        return True
+    for cls in type(exc).__mro__:
+        module = cls.__module__
+        if module.startswith("botocore.exceptions") and cls.__name__ in {
+            "NoCredentialsError",
+            "PartialCredentialsError",
+            "NoRegionError",
+            "TokenRetrievalError",
+            "SSOTokenLoadError",
+        }:
+            return True
+        if module.startswith("google.auth.exceptions"):
+            return True
+    return False
 
 
 def user_facing_llm_error(exc: Exception) -> str:
     """Map SDK errors to a message safe to show operators (no raw upstream details)."""
-    if isinstance(exc, anthropic.AuthenticationError | anthropic.PermissionDeniedError):
+    if isinstance(exc, anthropic.AuthenticationError | anthropic.PermissionDeniedError) or _is_cloud_credential_error(
+        exc
+    ):
         return "The AI service is misconfigured (invalid API credentials). Contact your administrator."
     if isinstance(exc, anthropic.RateLimitError):
         return "The AI service is busy right now. Please try again in a minute."
@@ -46,14 +91,22 @@ def user_facing_llm_error(exc: Exception) -> str:
     return "The answer could not be generated. Please try again."
 
 
+def response_text(message: anthropic.types.Message) -> str:
+    """The answer text of a response. Newer models (e.g. Sonnet 5, the Sonnet-class model on
+    Bedrock) think by default, so content can start with a thinking block: never read content[0]."""
+    return "".join(block.text for block in message.content if block.type == "text")
+
+
+# Output caps leave room for models that think before answering; thinking counts
+# toward max_tokens. They are ceilings, not costs: non-thinking models stop far earlier.
 async def expand_query(question: str) -> list[str]:
     """Use Claude to generate alternative phrasings for improved retrieval recall."""
     response = await get_client().messages.create(
         model=settings.llm_model,
-        max_tokens=256,
+        max_tokens=4096,
         messages=[{"role": "user", "content": EXPANSION_PROMPT.format(question=question)}],
     )
-    variants = response.content[0].text.strip().split("\n")
+    variants = response_text(response).strip().split("\n")
     return [v.strip() for v in variants if v.strip()]
 
 
@@ -145,7 +198,7 @@ async def stream_answer(
 
     async with get_client().messages.stream(
         model=settings.llm_model,
-        max_tokens=2048,
+        max_tokens=16000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     ) as stream:

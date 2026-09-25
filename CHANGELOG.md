@@ -6,6 +6,20 @@ All notable changes to PipelineGPT are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Claude on AWS Bedrock or Google Vertex AI (`LLM_PROVIDER=anthropic|bedrock|vertex`), so questions and document excerpts are processed within the customer's own cloud account. The installer asks which provider to use.
+- `llm-check` image role (`docker compose run --rm api llm-check`) that verifies the AI provider answers and prints the reason when it doesn't; the installer runs it.
+- `/health` reports the AI provider and model.
+
+### Changed
+- The API refuses to start when the chosen provider's settings are missing or the model ID doesn't match the provider (e.g. a Bedrock ID without the `anthropic.` prefix). `ANTHROPIC_API_KEY` is only required with `LLM_PROVIDER=anthropic`.
+- Output token caps raised so models that reason before answering (e.g. Claude Sonnet 5, the Sonnet-class model on Bedrock) aren't cut off. Reasoning tokens count toward `MAX_TOKENS_PER_DAY`.
+
+### Fixed
+- Document insights and query expansion read only the first content block, which breaks on models that return a thinking block first.
+- Document insights created an AI client outside the shared configuration; the worker now builds one per task.
+- Missing AWS or Google Cloud credentials now show "The AI service is misconfigured" instead of a generic error.
+
 ## [0.2.0] - unreleased
 
 First self-hostable release.

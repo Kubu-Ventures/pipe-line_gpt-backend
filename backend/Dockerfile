@@ -66,7 +66,7 @@ COPY --from=builder /opt/models /opt/models
 WORKDIR /app
 COPY --chown=app:app alembic ./alembic
 COPY --chown=app:app app ./app
-COPY --chown=app:app create_admin.py seed_demo.py docker-entrypoint.sh ./
+COPY --chown=app:app create_admin.py seed_demo.py check_llm.py docker-entrypoint.sh ./
 
 USER app
 EXPOSE 8000

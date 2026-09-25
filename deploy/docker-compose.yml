@@ -16,8 +16,19 @@ x-backend: &backend
     DEMO_MODE: ${DEMO_MODE:-false}
     DATABASE_URL: postgresql+asyncpg://pipelinegpt:${POSTGRES_PASSWORD:?}@postgres:5432/pipelinegpt
     REDIS_URL: redis://:${REDIS_PASSWORD:?}@redis:6379/0
-    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+    # AI provider: anthropic | bedrock | vertex. The API refuses to start if the
+    # chosen provider's settings are missing (see .env.example).
+    LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
     LLM_MODEL: ${LLM_MODEL:-claude-sonnet-4-6}
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    # Bedrock: leave the keys empty to use the host's IAM instance role.
+    AWS_REGION: ${AWS_REGION:-}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+    AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+    # Vertex: the service-account key is mounted by docker-compose.vertex.yml.
+    VERTEX_PROJECT_ID: ${VERTEX_PROJECT_ID:-}
+    VERTEX_REGION: ${VERTEX_REGION:-global}
     JWT_SECRET: ${JWT_SECRET:?}
     CORS_ORIGINS: https://${PIPELINEGPT_DOMAIN:?set PIPELINEGPT_DOMAIN in .env}
     MAX_TOKENS_PER_DAY: ${MAX_TOKENS_PER_DAY:-100000}

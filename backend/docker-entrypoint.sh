@@ -34,6 +34,9 @@ case "$role" in
   create-admin)
     exec python create_admin.py "$@"
     ;;
+  llm-check)
+    exec python check_llm.py "$@"
+    ;;
   *)
     exec "$role" "$@"
     ;;

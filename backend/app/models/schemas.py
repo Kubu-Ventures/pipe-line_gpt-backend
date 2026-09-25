@@ -206,6 +206,8 @@ class HealthResponse(BaseModel):
     database: str
     redis: str
     version: str
+    llm_provider: str
+    llm_model: str
 
 
 # ── Documents ─────────────────────────────────────────────────────────────────
