@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal, get_args
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -13,7 +13,7 @@ from app.ingest.file_types import EXTENSION_TO_SOURCE_TYPE, has_valid_magic, sou
 from app.middleware.auth import RequireEngineer, RequireOperator, get_db
 from app.middleware.rate_limit import get_redis
 from app.models.db import Document, User
-from app.models.schemas import IngestResponse, IngestStatusResponse
+from app.models.schemas import DocumentItem, DocumentPage, DocumentSummary, IngestResponse, IngestStatusResponse
 from app.services import audit_log, semantic_cache, upload_store
 from app.services.embedder import content_hash
 from app.tasks.celery_app import celery_app, ingest_document_task
@@ -144,7 +144,7 @@ async def ingest_history(
     user: Annotated[User, Depends(RequireOperator)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
-    """Return all ingested documents ordered by most recent first."""
+    """The 100 most recent documents. Kept for older frontends; use GET /ingest/documents."""
     result = await db.execute(select(Document).order_by(Document.ingest_date.desc()).limit(100))
     docs = result.scalars().all()
     return [
@@ -161,6 +161,83 @@ async def ingest_history(
         }
         for doc in docs
     ]
+
+
+DocumentStatusName = Literal["PENDING", "PROCESSING", "COMPLETED", "FAILED"]
+DOCUMENT_STATUSES = get_args(DocumentStatusName)
+
+
+def _escape_like(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+@router.get("/documents", response_model=DocumentPage)
+async def list_documents(
+    user: Annotated[User, Depends(RequireOperator)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    q: Annotated[str | None, Query(max_length=200, description="Text anywhere in the filename or folder path")] = None,
+    status_filter: Annotated[DocumentStatusName | None, Query(alias="status")] = None,
+) -> DocumentPage:
+    """Page through the knowledge base, newest first, with totals for the whole of it."""
+    conditions = []
+    if q and q.strip():
+        conditions.append(Document.filename.ilike(f"%{_escape_like(q.strip())}%", escape="\\"))
+    if status_filter:
+        conditions.append(Document.status == status_filter)
+
+    total = (await db.execute(select(func.count()).select_from(Document).where(*conditions))).scalar_one()
+    # Named columns: loading whole rows would drag insights_json along for every document.
+    rows = await db.execute(
+        select(
+            Document.id,
+            Document.filename,
+            Document.source_type,
+            Document.status,
+            Document.chunk_count,
+            Document.ingest_date,
+            Document.segment_id,
+            Document.commodity,
+            Document.operator_id,
+        )
+        .where(*conditions)
+        .order_by(Document.ingest_date.desc(), Document.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    items = [
+        DocumentItem(
+            id=str(row.id),
+            filename=row.filename,
+            source_type=row.source_type,
+            status=row.status,
+            chunk_count=row.chunk_count or 0,
+            ingest_date=row.ingest_date,
+            segment_id=row.segment_id,
+            commodity=row.commodity,
+            uploaded_by=row.operator_id,
+        )
+        for row in rows
+    ]
+
+    by_status = dict.fromkeys(DOCUMENT_STATUSES, 0)
+    total_chunks = 0
+    for doc_status, count, chunks in await db.execute(
+        select(Document.status, func.count(), func.coalesce(func.sum(Document.chunk_count), 0)).group_by(
+            Document.status
+        )
+    ):
+        by_status[doc_status] = count
+        total_chunks += chunks
+
+    return DocumentPage(
+        items=items,
+        total=total,
+        limit=limit,
+        offset=offset,
+        summary=DocumentSummary(documents=sum(by_status.values()), by_status=by_status, total_chunks=total_chunks),
+    )
 
 
 @router.get("/chunk/{document_id}/{chunk_index}")
