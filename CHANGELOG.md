@@ -16,6 +16,7 @@ All notable changes to PipelineGPT are documented here. The format follows
 - Scanned PDFs are now read with OCR (Tesseract, bundled in the image), page by page wherever a page has no text layer. Citations from those pages are labelled "Page N (OCR)" and the ingest audit event records how many pages were OCR'd. `OCR_LANGUAGES` selects the languages (default `eng`; packs for all ten UI languages are bundled), `OCR_ENABLED=false` turns it off.
 
 ### Fixed
+- Development stack (`backend/docker-compose.yml`): a `.env` created from `.env.example` set `UPLOAD_DIR=data/uploads` inside the containers, so the API and worker no longer shared staged uploads and every upload failed with "missing from the staging directory". The compose file now sets `UPLOAD_DIR=/data/uploads` itself.
 - `install.sh` wrote secrets through `sed` arguments, which exposed them in the server's process list while it ran and broke on values containing `|`, `&` or `\` (an AWS secret key with `&` was saved corrupted; a `|` aborted the install). It now writes `.env` with shell built-ins.
 - A re-analysis whose Claude call failed replaced the document's insights with nothing; the previous insights are now kept.
 - A document that took over an hour to process could be picked up by a second worker and processed twice at the same time (Redis redelivers unacknowledged tasks after its visibility timeout). The timeout now exceeds the task time limit.
