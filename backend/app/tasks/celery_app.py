@@ -233,3 +233,34 @@ async def _ingest_async(
         return {"document_id": document_id, "chunk_count": len(raw_chunks), "status": "COMPLETED"}
     finally:
         await engine.dispose()
+
+
+@celery_app.task(bind=True, name="tasks.refresh_insights_batch", max_retries=3)
+def refresh_insights_batch_task(self, run_id: str, after_id: str | None = None) -> dict:
+    """One batch of a dashboard insights refresh (services/insights_refresh.py). Queues
+    the next batch itself, so the refresh never holds a worker for long."""
+    try:
+        next_after = asyncio.run(_refresh_batch_async(run_id, after_id))
+    except Exception as exc:
+        raise self.retry(exc=exc, countdown=30 * (2**self.request.retries)) from exc
+    if next_after is not None:
+        refresh_insights_batch_task.delay(run_id, next_after)
+    return {"run_id": run_id, "next": next_after}
+
+
+async def _refresh_batch_async(run_id: str, after_id: str | None) -> str | None:
+    import redis.asyncio as aioredis
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.services import insights_refresh
+
+    # Fresh event loop per task: no pooled connections may outlive it (see _ingest_async).
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        async with async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)() as db:
+            return await insights_refresh.run_batch(db, redis, run_id, after_id)
+    finally:
+        await redis.aclose()
+        await engine.dispose()

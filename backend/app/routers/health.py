@@ -10,10 +10,12 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.middleware.auth import get_current_user, get_db
+from app.middleware.auth import RequireEngineer, get_current_user, get_db
 from app.middleware.rate_limit import get_redis
 from app.models.db import AuditEvent, Chunk, Document, HITLReview, Query, Response, User
 from app.models.schemas import HealthResponse
+from app.services import insights_refresh
+from app.tasks.celery_app import refresh_insights_batch_task
 
 router = APIRouter(tags=["health"])
 logger = logging.getLogger(__name__)
@@ -205,34 +207,20 @@ async def dashboard_insights(
     }
 
 
-@router.post("/dashboard/insights/refresh")
+@router.post("/dashboard/insights/refresh", status_code=202)
 async def refresh_insights(
     db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(RequireEngineer)],
 ) -> dict:
-    """Re-run insight extraction for all completed documents, except those ingested with
-    summaries skipped (bulk-import --skip-summaries). Engineer/Admin only."""
-    if current_user.role not in ("ENGINEER", "ADMIN"):
-        from fastapi import HTTPException
+    """Start re-analysing all completed documents in the background (except those ingested
+    with summaries skipped). Returns progress; GET this path to follow it. A refresh that is
+    already running is reported (already_running) rather than started twice."""
+    return await insights_refresh.start(
+        db, get_redis(), actor_id=str(current_user.id), dispatch=refresh_insights_batch_task.delay
+    )
 
-        raise HTTPException(status_code=403, detail="Engineer or Admin required")
 
-    from app.services.insights import extract_document_insights, is_skipped
-
-    docs_result = await db.execute(select(Document).where(Document.status == "COMPLETED"))
-    docs = docs_result.scalars().all()
-    refreshed = 0
-    for doc in docs:
-        if is_skipped(doc.insights_json):
-            continue
-        chunks_result = await db.execute(
-            select(Chunk).where(Chunk.document_id == doc.id).order_by(Chunk.chunk_index).limit(8)
-        )
-        raw = [
-            {"chunk_index": c.chunk_index, "text_content": c.text_content, "section_label": c.section_label}
-            for c in chunks_result.scalars().all()
-        ]
-        doc.insights_json = await extract_document_insights(doc.filename, raw) or {}
-        refreshed += 1
-    await db.commit()
-    return {"refreshed": refreshed}
+@router.get("/dashboard/insights/refresh")
+async def refresh_insights_status(_: Annotated[User, Depends(get_current_user)]) -> dict:
+    """Progress of the latest insights refresh: state is idle, running, done or interrupted."""
+    return await insights_refresh.status(get_redis())
