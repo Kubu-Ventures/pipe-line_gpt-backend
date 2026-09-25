@@ -6,21 +6,7 @@ All notable changes to PipelineGPT are documented here. The format follows
 
 ## [Unreleased]
 
-### Added
-- Claude on AWS Bedrock or Google Vertex AI (`LLM_PROVIDER=anthropic|bedrock|vertex`), so questions and document excerpts are processed within the customer's own cloud account. The installer asks which provider to use.
-- `llm-check` image role (`docker compose run --rm api llm-check`) that verifies the AI provider answers and prints the reason when it doesn't; the installer runs it.
-- `/health` reports the AI provider and model.
-
-### Changed
-- The API refuses to start when the chosen provider's settings are missing or the model ID doesn't match the provider (e.g. a Bedrock ID without the `anthropic.` prefix). `ANTHROPIC_API_KEY` is only required with `LLM_PROVIDER=anthropic`.
-- Output token caps raised so models that reason before answering (e.g. Claude Sonnet 5, the Sonnet-class model on Bedrock) aren't cut off. Reasoning tokens count toward `MAX_TOKENS_PER_DAY`.
-
-### Fixed
-- Document insights and query expansion read only the first content block, which breaks on models that return a thinking block first.
-- Document insights created an AI client outside the shared configuration; the worker now builds one per task.
-- Missing AWS or Google Cloud credentials now show "The AI service is misconfigured" instead of a generic error.
-
-## [0.2.0] - unreleased
+## [0.2.0] - 2026-09-25
 
 First self-hostable release.
 
@@ -32,6 +18,9 @@ First self-hostable release.
 - `ENVIRONMENT=production` safety checks, security headers, `/health/live`, configurable `CORS_ORIGINS`.
 - Integration test suite against real Postgres/pgvector and Redis; CI with lint, tests, shellcheck and image build.
 - LICENSE (AGPL-3.0), CONTRIBUTING, SECURITY, Code of Conduct.
+- Claude on AWS Bedrock or Google Vertex AI (`LLM_PROVIDER=anthropic|bedrock|vertex`), so questions and document excerpts are processed within the customer's own cloud account. The installer asks which provider to use.
+- `llm-check` image role (`docker compose run --rm api llm-check`) that verifies the AI provider answers and prints the reason when it doesn't; the installer runs it.
+- `/health` reports the AI provider and model.
 
 ### Changed
 - **Breaking:** answers are generated and risk-classified before any text is sent; flagged answers are withheld until an engineer approves them (they no longer stream token by token).
@@ -39,6 +28,8 @@ First self-hostable release.
 - Semantic cache stores only delivered answers, is scoped by language and filters, and is cleared when documents change.
 - PII scrubbing removes personal data only; segment IDs, places and dates are kept for retrieval.
 - Demo data loader and demo accounts require `DEMO_MODE=true`.
+- The API refuses to start when the chosen provider's settings are missing or the model ID doesn't match the provider (e.g. a Bedrock ID without the `anthropic.` prefix). `ANTHROPIC_API_KEY` is only required with `LLM_PROVIDER=anthropic`.
+- Output token caps raised so models that reason before answering (e.g. Claude Sonnet 5, the Sonnet-class model on Bedrock) aren't cut off. Reasoning tokens count toward `MAX_TOKENS_PER_DAY`.
 
 ### Fixed
 - Ingest worker failed on every document after the first in a worker process (event-loop-bound connections); retries duplicated chunks.
@@ -47,6 +38,9 @@ First self-hostable release.
 - Review queue showed a risk level guessed from confidence; it now uses the stored classification.
 - Audit export mislabelled engineer decisions and allowed spreadsheet formula injection.
 - Docker image included `.env` and `.venv`; Flower was missing from dependencies.
+- Document insights and query expansion read only the first content block, which breaks on models that return a thinking block first.
+- Document insights created an AI client outside the shared configuration; the worker now builds one per task.
+- Missing AWS or Google Cloud credentials now show "The AI service is misconfigured" instead of a generic error.
 
 [Unreleased]: https://github.com/Kubu-Ventures/pipe-line_gpt-backend/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/Kubu-Ventures/pipe-line_gpt-backend/releases/tag/v0.2.0
