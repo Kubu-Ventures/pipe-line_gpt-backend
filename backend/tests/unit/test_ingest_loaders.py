@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.ingest.chunker import chunk_text
 from app.ingest.csv_loader import load_csv
 from app.ingest.phmsa_loader import load_phmsa_tsv
@@ -64,3 +66,29 @@ def test_phmsa_tsv_dedup_hash():
     content = b"some pipeline data"
     assert content_hash(content) == content_hash(content)
     assert content_hash(b"different") != content_hash(content)
+
+
+@pytest.mark.parametrize(
+    ("filename", "relative_path", "expected"),
+    [
+        ("report.pdf", None, "report.pdf"),
+        ("C:\\scans\\report.pdf", None, "report.pdf"),  # directories in the filename are dropped
+        ("report.pdf", "records/2009/ILI/report.pdf", "records/2009/ILI/report.pdf"),
+        ("report.pdf", "records\\2009\\report.pdf", "records/2009/report.pdf"),
+        ("report.pdf", "/../../etc/./2009/report.pdf", "etc/2009/report.pdf"),  # no traversal, no root
+        ("report.pdf", "records/2009/other.pdf", "report.pdf"),  # path for a different file: ignored
+        ("report.pdf", "", "report.pdf"),
+    ],
+)
+def test_display_name(filename, relative_path, expected):
+    from app.ingest.file_types import display_name
+
+    assert display_name(filename, relative_path) == expected
+
+
+def test_display_name_keeps_the_end_of_a_very_long_path():
+    from app.ingest.file_types import NAME_MAX, display_name
+
+    name = display_name("report.pdf", "a/" * 400 + "report.pdf")
+    assert len(name) == NAME_MAX
+    assert name.endswith("/report.pdf")
