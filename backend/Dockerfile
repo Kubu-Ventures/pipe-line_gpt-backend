@@ -66,7 +66,11 @@ COPY --from=builder /opt/models /opt/models
 WORKDIR /app
 COPY --chown=app:app alembic ./alembic
 COPY --chown=app:app app ./app
-COPY --chown=app:app create_admin.py seed_demo.py check_llm.py docker-entrypoint.sh ./
+COPY --chown=app:app create_admin.py seed_demo.py check_llm.py bulk_import.py docker-entrypoint.sh ./
+# Staging for uploads awaiting the worker. Created here so a named volume mounted on it
+# inherits the app user's ownership.
+RUN mkdir -p /data/uploads && chown app:app /data/uploads
+ENV UPLOAD_DIR=/data/uploads
 
 USER app
 EXPOSE 8000

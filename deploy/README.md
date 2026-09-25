@@ -74,11 +74,31 @@ docker compose run --rm api llm-check   # prints OK, or what is wrong
 | Stop / start | `docker compose down` / `docker compose up -d` (data is kept in volumes) |
 | Another admin | `docker compose run --rm api create-admin someone@company.com` |
 | Check the AI provider | `docker compose run --rm api llm-check` |
+| Import an archive folder | see [Importing an archive](#importing-an-archive) |
 | Task monitor | `docker compose --profile ops up -d flower`, then `ssh -L 5555:127.0.0.1:5555 <server>` and open http://localhost:5555 |
 
 **Monitoring:**
 - `https://<domain>/backend/health` returns 200 when the API, database and Redis are healthy, and 503 otherwise. Point your uptime monitor at it.
 - Prometheus metrics are at `api:8000/metrics` on the internal network. Caddy blocks them publicly.
+
+## Importing an archive
+
+To load years of existing records at once, copy them to the server and queue the whole folder, subfolders included, instead of uploading files one by one:
+
+```bash
+# See what would be imported, without changing anything
+docker compose run --rm -v /srv/records:/import:ro api bulk-import /import --dry-run
+# Queue it
+docker compose run --rm -v /srv/records:/import:ro api bulk-import /import --operator you@company.com
+```
+
+- Supported files are PDF, CSV, TSV/TXT (PHMSA) and PHMSA ZIP. Anything else, empty files and files over `--max-mb` (default 200) are listed as skipped.
+- Files whose content is already in the knowledge base are skipped, so an interrupted import can be run again with the same command.
+- Each document is listed under its path inside the folder (e.g. `2009/ILI/segment-14.pdf`), which shows up in citations.
+- The command only queues. The workers process the files in the background; follow progress on the Documents page or in the task monitor. Raise `WORKER_CONCURRENCY` in `.env` (about one per vCPU) to go faster.
+- Queued files are held in the `uploads` volume until they are processed, so allow free disk space of about the size of the folder.
+- Each document also gets one AI call to summarise it for the dashboard, which counts against your AI provider's usage.
+- Scanned PDFs without a text layer produce no text and are marked failed. OCR them first.
 
 ## Backups
 

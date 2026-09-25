@@ -11,6 +11,7 @@ contain "test").
 from __future__ import annotations
 
 import os
+import tempfile
 
 import pytest
 
@@ -23,6 +24,8 @@ if TEST_DATABASE_URL:
 os.environ["JWT_SECRET"] = "test-jwt-secret-not-for-production"
 # Never let the suite reach the real Anthropic API; LLM calls are patched in tests.
 os.environ["ANTHROPIC_API_KEY"] = "test-key-not-real"
+# Staged uploads go to a throwaway directory, never the checkout's data/uploads.
+os.environ["UPLOAD_DIR"] = tempfile.mkdtemp(prefix="pipelinegpt-test-uploads-")
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
