@@ -124,13 +124,19 @@ mkdir -p "$records"
 log="$records/provision-$(date -u +%Y%m%dT%H%M%SZ).log"
 
 # ------------------------------------------------------------------ server access
-ssh_opts=(-o BatchMode=yes -o ConnectTimeout=15)
+# accept-new: a fresh VM's host key is unknown, and BatchMode would otherwise refuse it
+# instead of asking. A key that *changed* since it was recorded is still refused.
+ssh_opts=(-o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new)
 # Remote command lines are built here on purpose; every value in them goes through q().
 # shellcheck disable=SC2029
 remote() { ssh "${ssh_opts[@]}" "$host" "$@"; }
 
 say "Connecting to $host"
-remote true 2>/dev/null || fail "Can't ssh to $host without a prompt. Set up key-based access first (ssh-copy-id)."
+if ! ssh_error=$(remote true 2>&1); then
+  fail "Can't ssh to $host without a prompt: ${ssh_error:-no error message}
+  Check the address, that your key is authorized (ssh-copy-id), and, if the VM was
+  rebuilt, remove its old host key with: ssh-keygen -R ${host#*@}"
+fi
 if [[ "$(remote id -u)" == 0 ]]; then
   sudo=""
 else
@@ -140,6 +146,14 @@ fi
 # rbash: run the bash script given on stdin on the server, as root.
 rbash() { remote "$sudo bash -s"; }
 q() { printf '%q' "$1"; }
+
+# The installer's own trap deletes the answer and key files, but only once it has started.
+# This covers a run that stops before that (failed upload, lost connection, Ctrl-C).
+remove_answer_files() {
+  remote "$sudo rm -f $(q "$remote_dir/.provision.env") $(q "$remote_dir/.provision-gcp-key.json")" \
+    2>/dev/null || warn "Couldn't remove $remote_dir/.provision.env from $host; delete it by hand."
+}
+trap remove_answer_files EXIT
 
 say "Preparing the server (Docker, firewall)"
 rbash <<EOF 2>&1 | tee -a "$log"
@@ -168,8 +182,9 @@ admin_password=$(openssl rand -base64 36 | tr -d '/+=\n' | cut -c1-24)
 if [[ "$LLM_PROVIDER" == vertex ]]; then
   remote "$sudo sh -c $(q "umask 077; cat > $(q "$remote_dir")/.provision-gcp-key.json")" < "$VERTEX_KEY_FILE"
 fi
-# The answers travel on stdin into a 600 file that the installer's shell deletes on exit,
-# so no secret appears in a command line or process list.
+# The answers travel on stdin into a 600 file that is deleted when the installer exits (or
+# by remove_answer_files if this script stops first). No secret appears in a command line
+# here or in install.sh, which writes .env with bash built-ins.
 {
   for var in PIPELINEGPT_DOMAIN ACME_EMAIL PIPELINEGPT_VERSION LLM_PROVIDER ADMIN_EMAIL ADMIN_PASSWORD; do
     case "$var" in

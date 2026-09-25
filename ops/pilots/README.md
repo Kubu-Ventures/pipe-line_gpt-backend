@@ -8,7 +8,7 @@ This folder is for running hosted pilots. It isn't part of the customer deploy b
 
 1. **Create a VM:** Ubuntu 22.04/24.04 or Debian 12, at least 4 vCPU, 8 GB RAM and 40 GB disk (see `deploy/README.md` for sizing). Open ports 22, 80 and 443.
 2. **Point DNS at it:** an A record for the pilot's domain, e.g. `acme.pilots.example.com`, with the VM's IP. HTTPS certificates are issued on first start, so this must be in place first.
-3. **SSH access with a key**, as root or as a user with passwordless sudo (`ssh-copy-id root@<ip>`).
+3. **SSH access with a key**, as root or as a user with passwordless sudo (`ssh-copy-id root@<ip>`). The script accepts a new VM's host key on first connection; if you rebuild a VM at the same address, clear the old key with `ssh-keygen -R <ip>` first.
 4. **AI provider credentials in your environment** (never on the command line):
 
    | Provider | Set |

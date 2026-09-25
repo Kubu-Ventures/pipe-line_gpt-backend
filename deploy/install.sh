@@ -22,6 +22,25 @@ command -v openssl >/dev/null || fail "openssl is required to generate secrets."
 
 secret() { openssl rand -base64 48 | tr -d '/+=\n' | cut -c1-48; }
 
+# .env values to write, set with setenv KEY VALUE. write_env copies .env.example and
+# replaces those keys using bash built-ins only: sed -e would put every secret on its
+# command line (visible in the process list) and mangle values containing | & or \.
+declare -A env_values=()
+setenv() { env_values[$1]=$2; }
+write_env() {
+  local line key
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # Vertex needs its compose override; the template ships it commented out.
+    [[ "$line" == "#   COMPOSE_FILE="* && -n "${env_values[COMPOSE_FILE]+set}" ]] && line=${line#\#   }
+    key=${line%%=*}
+    if [[ "$line" == *=* && "$line" != \#* && -n "${env_values[$key]+set}" ]]; then
+      printf '%s=%s\n' "$key" "${env_values[$key]}"
+    else
+      printf '%s\n' "$line"
+    fi
+  done < .env.example > .env
+}
+
 # ask VAR PROMPT [secret]: keep VAR if already set, otherwise prompt for it (required).
 ask() {
   [[ -n "${!1:-}" ]] && return
@@ -57,12 +76,11 @@ if [[ ! -f .env ]]; then
       *) fail "Please choose 1, 2 or 3." ;;
     esac
   fi
-  llm=()
   case "$LLM_PROVIDER" in
     anthropic)
       ask ANTHROPIC_API_KEY "Anthropic API key (input hidden): " secret
-      llm+=(-e "s|^LLM_PROVIDER=.*|LLM_PROVIDER=anthropic|"
-            -e "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}|")
+      setenv LLM_PROVIDER anthropic
+      setenv ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
       ;;
     bedrock)
       ask AWS_REGION "AWS region with Claude enabled in Bedrock (e.g. us-east-1): "
@@ -72,11 +90,11 @@ if [[ ! -f .env ]]; then
       if [[ -n "${AWS_ACCESS_KEY_ID:-}" ]]; then
         ask AWS_SECRET_ACCESS_KEY "AWS secret access key (input hidden): " secret
       fi
-      llm+=(-e "s|^LLM_PROVIDER=.*|LLM_PROVIDER=bedrock|"
-            -e "s|^LLM_MODEL=.*|LLM_MODEL=${LLM_MODEL:-anthropic.claude-sonnet-5}|"
-            -e "s|^AWS_REGION=.*|AWS_REGION=${AWS_REGION}|"
-            -e "s|^AWS_ACCESS_KEY_ID=.*|AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}|"
-            -e "s|^AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}|")
+      setenv LLM_PROVIDER bedrock
+      setenv LLM_MODEL "${LLM_MODEL:-anthropic.claude-sonnet-5}"
+      setenv AWS_REGION "$AWS_REGION"
+      setenv AWS_ACCESS_KEY_ID "${AWS_ACCESS_KEY_ID:-}"
+      setenv AWS_SECRET_ACCESS_KEY "${AWS_SECRET_ACCESS_KEY:-}"
       ;;
     vertex)
       ask VERTEX_PROJECT_ID "Google Cloud project ID: "
@@ -87,25 +105,22 @@ if [[ ! -f .env ]]; then
       # by the container's non-root user.
       mkdir -p -m 700 secrets
       install -m 644 "$VERTEX_KEY_FILE" secrets/gcp-key.json
-      llm+=(-e "s|^LLM_PROVIDER=.*|LLM_PROVIDER=vertex|"
-            -e "s|^VERTEX_PROJECT_ID=.*|VERTEX_PROJECT_ID=${VERTEX_PROJECT_ID}|"
-            -e "s|^VERTEX_REGION=.*|VERTEX_REGION=${VERTEX_REGION:-global}|"
-            -e "s|^#   COMPOSE_FILE=|COMPOSE_FILE=|")
+      setenv LLM_PROVIDER vertex
+      setenv VERTEX_PROJECT_ID "$VERTEX_PROJECT_ID"
+      setenv VERTEX_REGION "${VERTEX_REGION:-global}"
+      setenv COMPOSE_FILE docker-compose.yml:docker-compose.vertex.yml
       ;;
     *) fail "LLM_PROVIDER must be anthropic, bedrock or vertex (got '$LLM_PROVIDER')." ;;
   esac
 
+  setenv PIPELINEGPT_DOMAIN "$domain"
+  setenv ACME_EMAIL "$acme"
+  setenv PIPELINEGPT_VERSION "$version"
+  for key in JWT_SECRET NEXTAUTH_SECRET POSTGRES_PASSWORD REDIS_PASSWORD; do
+    setenv "$key" "$(secret)"
+  done
   umask 077
-  sed \
-    -e "s|^PIPELINEGPT_DOMAIN=.*|PIPELINEGPT_DOMAIN=${domain}|" \
-    -e "s|^ACME_EMAIL=.*|ACME_EMAIL=${acme}|" \
-    -e "s|^PIPELINEGPT_VERSION=.*|PIPELINEGPT_VERSION=${version}|" \
-    "${llm[@]}" \
-    -e "s|^JWT_SECRET=.*|JWT_SECRET=$(secret)|" \
-    -e "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=$(secret)|" \
-    -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(secret)|" \
-    -e "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=$(secret)|" \
-    .env.example > .env
+  write_env
   say "Wrote .env (permissions 600). Back it up somewhere safe: it holds all secrets."
 else
   say "Using existing .env"
