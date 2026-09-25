@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import base64
+import asyncio
 import uuid
 from typing import Annotated
 
@@ -9,11 +9,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.ingest.file_types import EXTENSION_TO_SOURCE_TYPE, has_valid_magic, source_type_for
 from app.middleware.auth import RequireEngineer, RequireOperator, get_db
 from app.middleware.rate_limit import get_redis
 from app.models.db import Document, User
 from app.models.schemas import IngestResponse, IngestStatusResponse
-from app.services import audit_log, semantic_cache
+from app.services import audit_log, semantic_cache, upload_store
 from app.services.embedder import content_hash
 from app.tasks.celery_app import celery_app, ingest_document_task
 
@@ -27,14 +28,6 @@ ALLOWED_MIME_TYPES = {
     "application/x-zip-compressed",
     "application/octet-stream",
     "application/vnd.ms-excel",
-}
-
-EXTENSION_TO_SOURCE_TYPE = {
-    ".pdf": "pdf",
-    ".csv": "csv",
-    ".tsv": "phmsa",
-    ".txt": "phmsa",
-    ".zip": "phmsa_zip",
 }
 
 
@@ -68,17 +61,15 @@ async def ingest_file(
         )
 
     filename = (file.filename or "upload").replace("\\", "/").rsplit("/", 1)[-1][:255]
-    suffix = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    source_type = EXTENSION_TO_SOURCE_TYPE.get(suffix)
+    source_type = source_type_for(filename)
     if source_type is None:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=f"Unsupported file extension. Allowed: {', '.join(sorted(EXTENSION_TO_SOURCE_TYPE))}",
         )
-    if source_type == "pdf" and not content.startswith(b"%PDF-"):
-        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="File is not a valid PDF.")
-    if source_type == "phmsa_zip" and not content.startswith(b"PK"):
-        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="File is not a valid ZIP.")
+    if not has_valid_magic(source_type, content):
+        kind = "PDF" if source_type == "pdf" else "ZIP"
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=f"File is not a valid {kind}.")
 
     # SHA-256 deduplication
     sha256 = content_hash(content)
@@ -92,8 +83,9 @@ async def ingest_file(
             message="File already ingested (SHA-256 match). Skipping re-embedding.",
         )
 
-    # Create document record
+    # Stage the file for the worker, then create the document record
     doc_id = uuid.uuid4()
+    await asyncio.to_thread(upload_store.save, str(doc_id), content)
     doc = Document(
         id=doc_id,
         filename=filename,
@@ -105,14 +97,8 @@ async def ingest_file(
     db.add(doc)
     await db.commit()
 
-    # Dispatch Celery task
-    content_b64 = base64.b64encode(content).decode()
-    task = ingest_document_task.delay(
-        str(doc_id),
-        source_type,
-        filename,
-        content_b64,
-    )
+    # Dispatch Celery task (the file travels via upload_store, not the queue)
+    task = ingest_document_task.delay(str(doc_id), source_type, filename)
 
     await audit_log.log_event(
         db,
@@ -231,6 +217,7 @@ async def delete_document(
 
     await db.delete(doc)
     await db.commit()
+    upload_store.remove(document_id)  # only still there if the document was never processed
     await semantic_cache.invalidate(get_redis())
 
     await audit_log.log_event(
@@ -601,7 +588,6 @@ async def phmsa_sync(
     """Load realistic sample pipeline datasets for demo and testing (DEMO_MODE only)."""
     if not settings.demo_mode:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    import base64
 
     datasets = _build_demo_datasets()
     task_ids = []
@@ -613,6 +599,7 @@ async def phmsa_sync(
             continue
 
         doc_id = uuid.uuid4()
+        upload_store.save(str(doc_id), content)
         doc = Document(
             id=doc_id,
             filename=fname,
@@ -624,8 +611,7 @@ async def phmsa_sync(
         db.add(doc)
         await db.commit()
 
-        content_b64 = base64.b64encode(content).decode()
-        task = ingest_document_task.delay(str(doc_id), source_type, fname, content_b64)
+        task = ingest_document_task.delay(str(doc_id), source_type, fname)
         task_ids.append(task.id)
 
         await audit_log.log_event(

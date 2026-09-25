@@ -53,6 +53,9 @@ class Settings(BaseSettings):
 
     max_tokens_per_day: int = 100_000
     upload_max_bytes: int = 52_428_800  # 50 MB
+    # Where uploads wait for the worker (see services/upload_store.py). The API and the
+    # worker must share it; relative paths resolve against the working directory.
+    upload_dir: str = "data/uploads"
     # OCR of scanned PDF pages (tesseract, bundled in the Docker image). Languages are
     # tesseract codes joined with "+", e.g. "eng+spa"; each one slows OCR down.
     ocr_enabled: bool = True

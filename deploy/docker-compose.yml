@@ -11,6 +11,9 @@ name: pipelinegpt
 x-backend: &backend
   image: ghcr.io/kubu-ventures/pipelinegpt-backend:${PIPELINEGPT_VERSION:?set PIPELINEGPT_VERSION in .env}
   restart: unless-stopped
+  # Uploads wait here until a worker ingests them (shared by api and worker).
+  volumes:
+    - uploads:/data/uploads
   environment: &backend-env
     ENVIRONMENT: production
     DEMO_MODE: ${DEMO_MODE:-false}
@@ -147,6 +150,7 @@ networks:
   egress: {}
 
 volumes:
+  uploads:
   postgres_data:
   redis_data:
   caddy_data:
