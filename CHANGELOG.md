@@ -13,9 +13,11 @@ All notable changes to PipelineGPT are documented here. The format follows
 - Scanned PDFs are now read with OCR (Tesseract, bundled in the image), page by page wherever a page has no text layer. Citations from those pages are labelled "Page N (OCR)" and the ingest audit event records how many pages were OCR'd. `OCR_LANGUAGES` selects the languages (default `eng`; packs for all ten UI languages are bundled), `OCR_ENABLED=false` turns it off.
 
 ### Fixed
+- A re-analysis whose Claude call failed replaced the document's insights with nothing; the previous insights are now kept.
 - A document that took over an hour to process could be picked up by a second worker and processed twice at the same time (Redis redelivers unacknowledged tasks after its visibility timeout). The timeout now exceeds the task time limit.
 
 ### Changed
+- The dashboard's "Re-analyse" (`POST /dashboard/insights/refresh`) now runs in the background in batches of 25 documents and returns at once (202) with progress; `GET` on the same path reports it. It used to call Claude for every document inside one request, which on a large knowledge base would time out and couldn't be followed. Only one refresh runs at a time.
 - Uploaded files now wait for the worker in a shared `uploads` volume instead of inside the Redis queue, so a large backlog no longer fills Redis memory. Uploads queued before upgrading are still processed.
 - Ingestion time limit raised from 30 minutes to 2 hours per document, to fit OCR of long scanned reports. A document that exceeds it is marked failed instead of being retried three more times.
 

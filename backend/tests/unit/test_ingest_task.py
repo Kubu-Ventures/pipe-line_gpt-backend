@@ -43,3 +43,23 @@ def test_summarize_option_reaches_the_worker(monkeypatch):
     ingest_document_task.apply(args=[str(uuid.uuid4()), "csv", "a.csv"], kwargs={"summarize": False})
     ingest_document_task.apply(args=[str(uuid.uuid4()), "csv", "b.csv"])  # older messages: no option
     assert received == [False, True]
+
+
+def test_refresh_batches_chain_until_done(monkeypatch):
+    from app.tasks.celery_app import refresh_insights_batch_task
+
+    cursors = iter(["cursor-1", "cursor-2", None])
+    ran: list = []
+    queue: list[tuple] = [("run", None)]
+
+    async def fake_batch(run_id, after_id):
+        ran.append(after_id)
+        return next(cursors)
+
+    monkeypatch.setattr("app.tasks.celery_app._refresh_batch_async", fake_batch)
+    monkeypatch.setattr(refresh_insights_batch_task, "delay", lambda *args: queue.append(args))
+
+    while queue:  # stands in for the broker
+        refresh_insights_batch_task.apply(args=list(queue.pop(0)))
+
+    assert ran == [None, "cursor-1", "cursor-2"]  # each batch queued the next; the last one stopped

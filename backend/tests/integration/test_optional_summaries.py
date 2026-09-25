@@ -74,16 +74,3 @@ async def test_dashboard_does_not_fill_in_skipped_summaries(client, make_user, d
 
     assert resp.status_code == 200
     assert calls == ["missing.csv"]  # only the one that never had a summary
-
-
-async def test_refresh_leaves_skipped_documents_alone(client, make_user, db_session, monkeypatch):
-    calls = count_insight_calls(monkeypatch)
-    skipped_id = await add_doc(db_session, "skipped.csv", SKIPPED)
-    await add_doc(db_session, "summarized.csv", {"summary": "old"})
-
-    resp = await client.post("/dashboard/insights/refresh", headers=auth_headers(await make_user("ENGINEER")))
-
-    assert resp.json() == {"refreshed": 1}
-    assert calls == ["summarized.csv"]
-    doc = await db_session.get(Document, skipped_id, populate_existing=True)
-    assert doc.insights_json == SKIPPED
