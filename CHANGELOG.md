@@ -7,6 +7,9 @@ All notable changes to PipelineGPT are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `ops/pilots/provision.sh` sets up a hosted pilot on a fresh VM in one command: installs Docker if needed, deploys the release bundle, runs the installer unattended, schedules daily backups, loads the pilot's documents, and keeps the admin password and a copy of the server's `.env` on your machine. See `ops/pilots/README.md`.
+- `install.sh` can run unattended: answers already set as environment variables (domain, AI provider settings, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, …) are not asked for. Run from a terminal, it asks as before.
+- `create-admin <email> --password-stdin` reads the password from stdin, for scripts.
 - `GET /ingest/documents`: pages through the whole knowledge base (newest first, `limit`/`offset`), searches file names and folder paths (`q`), filters by `status`, and returns totals for every document. `GET /ingest/history` only ever returned the latest 100, so the Documents page could not show or count a large archive. `/ingest/history` is kept for older frontends.
 - `bulk-import` command to queue a whole folder of documents (e.g. decades of records) instead of uploading them one at a time. It streams files of any size up to `--max-mb`, skips files already ingested, and can be re-run after an interruption. See "Importing an archive" in `deploy/README.md`.
 - Scanned PDFs are now read with OCR (Tesseract, bundled in the image), page by page wherever a page has no text layer. Citations from those pages are labelled "Page N (OCR)" and the ingest audit event records how many pages were OCR'd. `OCR_LANGUAGES` selects the languages (default `eng`; packs for all ten UI languages are bundled), `OCR_ENABLED=false` turns it off.

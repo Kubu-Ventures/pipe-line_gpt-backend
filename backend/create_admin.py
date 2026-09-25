@@ -2,7 +2,8 @@
 CLI script to create the first admin account.
 
 Usage:
-    python create_admin.py <email>          # prompts for the password
+    python create_admin.py <email>                     # prompts for the password
+    python create_admin.py <email> --password-stdin    # reads it from stdin (for scripts)
 
 The admin is created ACTIVE without MFA; the first sign-in forces TOTP enrollment.
 Subsequent admins should be created through the /admin/invite endpoint.
@@ -10,6 +11,7 @@ Subsequent admins should be created through the /admin/invite endpoint.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import getpass
 import sys
@@ -50,18 +52,32 @@ async def create_admin(email: str, password: str) -> None:
     await engine.dispose()
 
 
+def read_password(from_stdin: bool) -> str:
+    """Return a validated password, or raise SystemExit with a message."""
+    if from_stdin:
+        # One line, so a script can pipe it in: printf '%s\n' "$pw" | ... --password-stdin
+        password = sys.stdin.readline().rstrip("\r\n")
+    else:
+        password = getpass.getpass("Password (min 12 characters): ")
+    if len(password) < 12:
+        raise SystemExit("Error: password must be at least 12 characters.")
+    if not from_stdin and getpass.getpass("Confirm password: ") != password:
+        raise SystemExit("Error: passwords do not match.")
+    return password
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Create an ADMIN account.")
+    parser.add_argument("email")
+    parser.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="read the password from the first line of stdin instead of prompting",
+    )
+    args = parser.parse_args(argv)
+    password = read_password(args.password_stdin)
+    asyncio.run(create_admin(args.email, password))
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python create_admin.py <email>")
-        sys.exit(1)
-
-    email_arg = sys.argv[1]
-    password_arg = getpass.getpass("Password (min 12 characters): ")
-    if len(password_arg) < 12:
-        print("Error: password must be at least 12 characters.")
-        sys.exit(1)
-    if getpass.getpass("Confirm password: ") != password_arg:
-        print("Error: passwords do not match.")
-        sys.exit(1)
-
-    asyncio.run(create_admin(email_arg, password_arg))
+    main()

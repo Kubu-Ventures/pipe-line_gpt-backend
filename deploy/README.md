@@ -42,6 +42,8 @@ Open `https://<your-domain>`, sign in, and enroll an authenticator app (Microsof
 
 Then invite your team from **Admin → Invite**. Registration is invite-only, and invitation links expire after 48 hours.
 
+**Unattended install** (configuration management, CI): set the answers as environment variables and the installer won't ask for them. Without a terminal, a missing answer stops it with the name of the variable. The variables are listed at the top of `install.sh`: `PIPELINEGPT_DOMAIN`, `ACME_EMAIL`, `LLM_PROVIDER` with that provider's settings, `ADMIN_EMAIL` and `ADMIN_PASSWORD`. Pass secrets through a file only root can read rather than on the command line, and delete it afterwards.
+
 ## Choosing the AI provider
 
 | Provider | Data goes to | You need |
