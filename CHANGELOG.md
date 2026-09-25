@@ -7,12 +7,16 @@ All notable changes to PipelineGPT are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `ops/pilots/provision.sh` sets up a hosted pilot on a fresh VM in one command: installs Docker if needed, deploys the release bundle, runs the installer unattended, schedules daily backups, loads the pilot's documents, and keeps the admin password and a copy of the server's `.env` on your machine. See `ops/pilots/README.md`.
+- `install.sh` can run unattended: answers already set as environment variables (domain, AI provider settings, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, …) are not asked for. Run from a terminal, it asks as before.
+- `create-admin <email> --password-stdin` reads the password from stdin, for scripts.
 - `GET /ingest/documents`: pages through the whole knowledge base (newest first, `limit`/`offset`), searches file names and folder paths (`q`), filters by `status`, and returns totals for every document. `GET /ingest/history` only ever returned the latest 100, so the Documents page could not show or count a large archive. `/ingest/history` is kept for older frontends.
 - `bulk-import --skip-summaries` leaves out the per-document Claude summary that feeds the dashboard, saving one AI call per document on large archives. Skipped documents are still fully searchable; the dashboard neither fills in nor refreshes their summaries.
 - `bulk-import` command to queue a whole folder of documents (e.g. decades of records) instead of uploading them one at a time. It streams files of any size up to `--max-mb`, skips files already ingested, and can be re-run after an interruption. See "Importing an archive" in `deploy/README.md`.
 - Scanned PDFs are now read with OCR (Tesseract, bundled in the image), page by page wherever a page has no text layer. Citations from those pages are labelled "Page N (OCR)" and the ingest audit event records how many pages were OCR'd. `OCR_LANGUAGES` selects the languages (default `eng`; packs for all ten UI languages are bundled), `OCR_ENABLED=false` turns it off.
 
 ### Fixed
+- `install.sh` wrote secrets through `sed` arguments, which exposed them in the server's process list while it ran and broke on values containing `|`, `&` or `\` (an AWS secret key with `&` was saved corrupted; a `|` aborted the install). It now writes `.env` with shell built-ins.
 - A re-analysis whose Claude call failed replaced the document's insights with nothing; the previous insights are now kept.
 - A document that took over an hour to process could be picked up by a second worker and processed twice at the same time (Redis redelivers unacknowledged tasks after its visibility timeout). The timeout now exceeds the task time limit.
 
