@@ -22,10 +22,12 @@ RUN python -m venv /opt/venv
 # CPU-only torch first, so sentence-transformers doesn't pull the multi-GB CUDA build.
 RUN pip install --index-url https://download.pytorch.org/whl/cpu torch
 
+# Dependencies come from pyproject.toml alone, so code changes don't invalidate the
+# dependency and model layers below. The app itself runs from /app (PYTHONPATH).
 WORKDIR /build
 COPY pyproject.toml ./
-COPY app ./app
-RUN pip install .
+RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))" > requirements.txt \
+    && pip install -r requirements.txt
 
 RUN python -m spacy download en_core_web_sm
 
@@ -46,6 +48,7 @@ LABEL org.opencontainers.image.title="PipelineGPT backend" \
 
 ENV VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:$PATH \
+    PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     FASTEMBED_CACHE_PATH=/opt/models/fastembed \
