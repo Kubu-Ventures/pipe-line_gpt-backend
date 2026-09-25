@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # First-time install of PipelineGPT on a Linux host with Docker.
 # Idempotent: re-running keeps an existing .env and just (re)starts the stack.
+#
+# Unattended use: any answer already set as an environment variable is not asked for,
+# and without a terminal a missing required answer is an error. The variables are
+#   PIPELINEGPT_DOMAIN, ACME_EMAIL, PIPELINEGPT_VERSION (optional),
+#   LLM_PROVIDER = anthropic | bedrock | vertex, then for that provider
+#     anthropic: ANTHROPIC_API_KEY
+#     bedrock:   AWS_REGION, and optionally LLM_MODEL, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+#     vertex:    VERTEX_PROJECT_ID, VERTEX_KEY_FILE (path to the key JSON), optionally VERTEX_REGION
+#   ADMIN_EMAIL and ADMIN_PASSWORD (12+ characters) for the first administrator.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -13,73 +22,105 @@ command -v openssl >/dev/null || fail "openssl is required to generate secrets."
 
 secret() { openssl rand -base64 48 | tr -d '/+=\n' | cut -c1-48; }
 
+# .env values to write, set with setenv KEY VALUE. write_env copies .env.example and
+# replaces those keys using bash built-ins only: sed -e would put every secret on its
+# command line (visible in the process list) and mangle values containing | & or \.
+declare -A env_values=()
+setenv() { env_values[$1]=$2; }
+write_env() {
+  local line key
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # Vertex needs its compose override; the template ships it commented out.
+    [[ "$line" == "#   COMPOSE_FILE="* && -n "${env_values[COMPOSE_FILE]+set}" ]] && line=${line#\#   }
+    key=${line%%=*}
+    if [[ "$line" == *=* && "$line" != \#* && -n "${env_values[$key]+set}" ]]; then
+      printf '%s=%s\n' "$key" "${env_values[$key]}"
+    else
+      printf '%s\n' "$line"
+    fi
+  done < .env.example > .env
+}
+
+# ask VAR PROMPT [secret]: keep VAR if already set, otherwise prompt for it (required).
+ask() {
+  [[ -n "${!1:-}" ]] && return
+  [[ -t 0 ]] || fail "$1 is not set, and there is no terminal to ask for it."
+  if [[ "${3:-}" == secret ]]; then read -rsp "$2" "$1"; echo; else read -rp "$2" "$1"; fi
+  [[ -n "${!1}" ]] || fail "$1 is required."
+}
+# ask_optional VAR PROMPT [secret]: like ask, but an empty answer (or no terminal) is fine.
+ask_optional() {
+  [[ -n "${!1:-}" || ! -t 0 ]] && return
+  if [[ "${3:-}" == secret ]]; then read -rsp "$2" "$1"; echo; else read -rp "$2" "$1"; fi
+}
+
 if [[ ! -f .env ]]; then
   say "Configuring a new installation"
-  read -rp "Domain users will open (e.g. pipelinegpt.yourcompany.com): " domain
-  [[ -n "$domain" ]] || fail "A domain is required."
-  read -rp "Email for Let's Encrypt certificate notices: " acme
-  [[ -n "$acme" ]] || fail "An email is required."
+  ask PIPELINEGPT_DOMAIN "Domain users will open (e.g. pipelinegpt.yourcompany.com): "
+  ask ACME_EMAIL "Email for Let's Encrypt certificate notices: "
+  domain="$PIPELINEGPT_DOMAIN"
+  acme="$ACME_EMAIL"
   version="${PIPELINEGPT_VERSION:-$(cat VERSION 2>/dev/null || echo latest)}"
 
-  echo "Where should the AI model run?"
-  echo "  1) Anthropic API (simplest; needs an Anthropic API key)"
-  echo "  2) AWS Bedrock in your AWS account"
-  echo "  3) Google Vertex AI in your Google Cloud project"
-  read -rp "Choose 1, 2 or 3 [1]: " choice
-  llm=()
-  case "${choice:-1}" in
-    1)
-      read -rsp "Anthropic API key (input hidden): " anthropic; echo
-      [[ -n "$anthropic" ]] || fail "An Anthropic API key is required."
-      llm+=(-e "s|^LLM_PROVIDER=.*|LLM_PROVIDER=anthropic|"
-            -e "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${anthropic}|")
+  if [[ -z "${LLM_PROVIDER:-}" ]]; then
+    [[ -t 0 ]] || fail "LLM_PROVIDER is not set (anthropic, bedrock or vertex)."
+    echo "Where should the AI model run?"
+    echo "  1) Anthropic API (simplest; needs an Anthropic API key)"
+    echo "  2) AWS Bedrock in your AWS account"
+    echo "  3) Google Vertex AI in your Google Cloud project"
+    read -rp "Choose 1, 2 or 3 [1]: " choice
+    case "${choice:-1}" in
+      1) LLM_PROVIDER=anthropic ;;
+      2) LLM_PROVIDER=bedrock ;;
+      3) LLM_PROVIDER=vertex ;;
+      *) fail "Please choose 1, 2 or 3." ;;
+    esac
+  fi
+  case "$LLM_PROVIDER" in
+    anthropic)
+      ask ANTHROPIC_API_KEY "Anthropic API key (input hidden): " secret
+      setenv LLM_PROVIDER anthropic
+      setenv ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
       ;;
-    2)
-      read -rp "AWS region with Claude enabled in Bedrock (e.g. us-east-1): " region
-      [[ -n "$region" ]] || fail "An AWS region is required."
-      read -rp "Bedrock model ID [anthropic.claude-sonnet-5]: " model
-      echo "AWS credentials: leave the access key empty to use this server's IAM role."
-      read -rp "AWS access key ID (optional): " aws_key
-      aws_secret=""
-      if [[ -n "$aws_key" ]]; then
-        read -rsp "AWS secret access key (input hidden): " aws_secret; echo
-        [[ -n "$aws_secret" ]] || fail "The secret access key is required with an access key ID."
+    bedrock)
+      ask AWS_REGION "AWS region with Claude enabled in Bedrock (e.g. us-east-1): "
+      ask_optional LLM_MODEL "Bedrock model ID [anthropic.claude-sonnet-5]: "
+      [[ -t 0 && -z "${AWS_ACCESS_KEY_ID:-}" ]] && echo "AWS credentials: leave the access key empty to use this server's IAM role."
+      ask_optional AWS_ACCESS_KEY_ID "AWS access key ID (optional): "
+      if [[ -n "${AWS_ACCESS_KEY_ID:-}" ]]; then
+        ask AWS_SECRET_ACCESS_KEY "AWS secret access key (input hidden): " secret
       fi
-      llm+=(-e "s|^LLM_PROVIDER=.*|LLM_PROVIDER=bedrock|"
-            -e "s|^LLM_MODEL=.*|LLM_MODEL=${model:-anthropic.claude-sonnet-5}|"
-            -e "s|^AWS_REGION=.*|AWS_REGION=${region}|"
-            -e "s|^AWS_ACCESS_KEY_ID=.*|AWS_ACCESS_KEY_ID=${aws_key}|"
-            -e "s|^AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=${aws_secret}|")
+      setenv LLM_PROVIDER bedrock
+      setenv LLM_MODEL "${LLM_MODEL:-anthropic.claude-sonnet-5}"
+      setenv AWS_REGION "$AWS_REGION"
+      setenv AWS_ACCESS_KEY_ID "${AWS_ACCESS_KEY_ID:-}"
+      setenv AWS_SECRET_ACCESS_KEY "${AWS_SECRET_ACCESS_KEY:-}"
       ;;
-    3)
-      read -rp "Google Cloud project ID: " project
-      [[ -n "$project" ]] || fail "A project ID is required."
-      read -rp "Vertex region [global]: " vregion
-      read -rp "Path to the service-account key JSON (role: Vertex AI User): " keyfile
-      [[ -f "$keyfile" ]] || fail "No file at '$keyfile'."
+    vertex)
+      ask VERTEX_PROJECT_ID "Google Cloud project ID: "
+      ask_optional VERTEX_REGION "Vertex region [global]: "
+      ask VERTEX_KEY_FILE "Path to the service-account key JSON (role: Vertex AI User): "
+      [[ -f "$VERTEX_KEY_FILE" ]] || fail "No file at '$VERTEX_KEY_FILE'."
       # Directory 700 keeps the key private on the host; the file itself must be readable
       # by the container's non-root user.
       mkdir -p -m 700 secrets
-      install -m 644 "$keyfile" secrets/gcp-key.json
-      llm+=(-e "s|^LLM_PROVIDER=.*|LLM_PROVIDER=vertex|"
-            -e "s|^VERTEX_PROJECT_ID=.*|VERTEX_PROJECT_ID=${project}|"
-            -e "s|^VERTEX_REGION=.*|VERTEX_REGION=${vregion:-global}|"
-            -e "s|^#   COMPOSE_FILE=|COMPOSE_FILE=|")
+      install -m 644 "$VERTEX_KEY_FILE" secrets/gcp-key.json
+      setenv LLM_PROVIDER vertex
+      setenv VERTEX_PROJECT_ID "$VERTEX_PROJECT_ID"
+      setenv VERTEX_REGION "${VERTEX_REGION:-global}"
+      setenv COMPOSE_FILE docker-compose.yml:docker-compose.vertex.yml
       ;;
-    *) fail "Please choose 1, 2 or 3." ;;
+    *) fail "LLM_PROVIDER must be anthropic, bedrock or vertex (got '$LLM_PROVIDER')." ;;
   esac
 
+  setenv PIPELINEGPT_DOMAIN "$domain"
+  setenv ACME_EMAIL "$acme"
+  setenv PIPELINEGPT_VERSION "$version"
+  for key in JWT_SECRET NEXTAUTH_SECRET POSTGRES_PASSWORD REDIS_PASSWORD; do
+    setenv "$key" "$(secret)"
+  done
   umask 077
-  sed \
-    -e "s|^PIPELINEGPT_DOMAIN=.*|PIPELINEGPT_DOMAIN=${domain}|" \
-    -e "s|^ACME_EMAIL=.*|ACME_EMAIL=${acme}|" \
-    -e "s|^PIPELINEGPT_VERSION=.*|PIPELINEGPT_VERSION=${version}|" \
-    "${llm[@]}" \
-    -e "s|^JWT_SECRET=.*|JWT_SECRET=$(secret)|" \
-    -e "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=$(secret)|" \
-    -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(secret)|" \
-    -e "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=$(secret)|" \
-    .env.example > .env
+  write_env
   say "Wrote .env (permissions 600). Back it up somewhere safe: it holds all secrets."
 else
   say "Using existing .env"
@@ -107,8 +148,13 @@ fi
 
 if [[ -z "$(docker compose exec -T postgres psql -U pipelinegpt -d pipelinegpt -tAc "SELECT 1 FROM users WHERE role='ADMIN' LIMIT 1")" ]]; then
   say "Create the first administrator"
-  read -rp "Admin email: " admin_email
-  docker compose run --rm api create-admin "$admin_email"
+  ask ADMIN_EMAIL "Admin email: "
+  if [[ -n "${ADMIN_PASSWORD:-}" ]]; then
+    printf '%s\n' "$ADMIN_PASSWORD" | docker compose run --rm -T api create-admin "$ADMIN_EMAIL" --password-stdin
+  else
+    [[ -t 0 ]] || fail "ADMIN_PASSWORD is not set, and there is no terminal to ask for it."
+    docker compose run --rm api create-admin "$ADMIN_EMAIL"
+  fi
 fi
 
 domain=$(grep '^PIPELINEGPT_DOMAIN=' .env | cut -d= -f2)

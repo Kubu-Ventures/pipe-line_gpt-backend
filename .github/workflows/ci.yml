@@ -23,7 +23,7 @@ jobs:
       - run: uvx ruff format --check .
       - name: shellcheck deploy scripts
         working-directory: .
-        run: shellcheck deploy/*.sh backend/docker-entrypoint.sh
+        run: shellcheck deploy/*.sh ops/pilots/*.sh backend/docker-entrypoint.sh
 
   test:
     runs-on: ubuntu-latest
