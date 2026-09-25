@@ -118,6 +118,34 @@ class IngestResponse(BaseModel):
     message: str
 
 
+class DocumentItem(BaseModel):
+    id: str
+    filename: str
+    source_type: str
+    status: str
+    chunk_count: int
+    ingest_date: datetime | None
+    segment_id: str | None
+    commodity: str | None
+    uploaded_by: str | None
+
+
+class DocumentSummary(BaseModel):
+    """Totals over the whole knowledge base, whatever the page filters."""
+
+    documents: int
+    by_status: dict[str, int]  # every status present, zero when none
+    total_chunks: int
+
+
+class DocumentPage(BaseModel):
+    items: list[DocumentItem]
+    total: int  # documents matching the filters
+    limit: int
+    offset: int
+    summary: DocumentSummary
+
+
 class IngestStatusResponse(BaseModel):
     task_id: str
     status: str
