@@ -4,16 +4,23 @@ import asyncio
 import uuid
 from typing import Annotated, Literal, get_args
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.ingest.file_types import EXTENSION_TO_SOURCE_TYPE, has_valid_magic, source_type_for
+from app.ingest.file_types import EXTENSION_TO_SOURCE_TYPE, display_name, has_valid_magic, source_type_for
 from app.middleware.auth import RequireEngineer, RequireOperator, get_db
 from app.middleware.rate_limit import get_redis
 from app.models.db import Document, User
-from app.models.schemas import DocumentItem, DocumentPage, DocumentSummary, IngestResponse, IngestStatusResponse
+from app.models.schemas import (
+    DocumentItem,
+    DocumentPage,
+    DocumentSummary,
+    IngestResponse,
+    IngestStatusResponse,
+    UploadConfig,
+)
 from app.services import audit_log, semantic_cache, upload_store
 from app.services.embedder import content_hash
 from app.tasks.celery_app import celery_app, ingest_document_task
@@ -28,6 +35,7 @@ ALLOWED_MIME_TYPES = {
     "application/x-zip-compressed",
     "application/octet-stream",
     "application/vnd.ms-excel",
+    "text/tab-separated-values",  # what browsers send for .tsv (PHMSA exports)
 }
 
 
@@ -37,6 +45,10 @@ async def ingest_file(
     file: Annotated[UploadFile, File(...)],
     user: Annotated[User, Depends(RequireOperator)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    relative_path: Annotated[
+        str | None,
+        Form(max_length=1024, description="Path of the file inside an uploaded folder, kept as its name"),
+    ] = None,
 ) -> IngestResponse:
     """Upload a document for async ingestion. Returns a task_id for status polling."""
 
@@ -60,7 +72,7 @@ async def ingest_file(
             detail=f"Unsupported file type: {file.content_type}",
         )
 
-    filename = (file.filename or "upload").replace("\\", "/").rsplit("/", 1)[-1][:255]
+    filename = display_name(file.filename or "upload", relative_path)
     source_type = source_type_for(filename)
     if source_type is None:
         raise HTTPException(
@@ -116,6 +128,12 @@ async def ingest_file(
         filename=filename,
         message="Ingestion queued successfully.",
     )
+
+
+@router.get("/config", response_model=UploadConfig)
+async def upload_config(_: Annotated[User, Depends(RequireOperator)]) -> UploadConfig:
+    """What POST /ingest accepts, so the upload page can check files before sending them."""
+    return UploadConfig(max_upload_bytes=settings.upload_max_bytes, extensions=sorted(EXTENSION_TO_SOURCE_TYPE))
 
 
 @router.get("/status/{task_id}", response_model=IngestStatusResponse)

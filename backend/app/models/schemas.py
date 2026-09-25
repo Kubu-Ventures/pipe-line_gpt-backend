@@ -146,6 +146,11 @@ class DocumentPage(BaseModel):
     summary: DocumentSummary
 
 
+class UploadConfig(BaseModel):
+    max_upload_bytes: int
+    extensions: list[str]  # e.g. [".csv", ".pdf", ...]
+
+
 class IngestStatusResponse(BaseModel):
     task_id: str
     status: str

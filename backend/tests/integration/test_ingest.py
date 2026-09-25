@@ -262,3 +262,32 @@ async def test_worker_fails_cleanly_when_staged_file_is_missing(db_session):
 
     doc = await db_session.get(Document, doc_id, populate_existing=True)
     assert doc.status == "FAILED"
+
+
+async def test_upload_config_reports_limits(client, make_user):
+    resp = await client.get("/ingest/config", headers=auth_headers(await make_user("OPERATOR")))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["max_upload_bytes"] == 52_428_800
+    assert body["extensions"] == [".csv", ".pdf", ".tsv", ".txt", ".zip"]
+    assert (await client.get("/ingest/config")).status_code == 401
+
+
+async def test_folder_upload_keeps_the_path(client, make_user, dispatched, db_session):
+    operator = await make_user("OPERATOR")
+    resp = await client.post(
+        "/ingest",
+        files={"file": ("ili.csv", CSV, "text/csv")},
+        data={"relative_path": "records/2009/ILI/ili.csv"},
+        headers=auth_headers(operator),
+    )
+    assert resp.status_code == 202
+    doc = await db_session.get(Document, uuid.UUID(resp.json()["document_id"]))
+    assert doc.filename == "records/2009/ILI/ili.csv"
+    assert dispatched[0][2] == "records/2009/ILI/ili.csv"
+
+
+async def test_tsv_upload_with_browser_mime_type(client, make_user, dispatched):
+    tsv = b"REPORT_NUMBER\tCAUSE\n2009001\tCorrosion\n"
+    resp = await upload(client, await make_user("OPERATOR"), tsv, "incidents.tsv", "text/tab-separated-values")
+    assert resp.status_code == 202
