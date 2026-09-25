@@ -31,6 +31,9 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://pipelinegpt:pipelinegpt@db:5432/pipelinegpt
       REDIS_URL: redis://redis:6379/0
+      # The shared volume below. Set here because it overrides .env, whose UPLOAD_DIR
+      # (from .env.example) is a relative path meant for running outside Docker.
+      UPLOAD_DIR: /data/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -47,6 +50,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://pipelinegpt:pipelinegpt@db:5432/pipelinegpt
       REDIS_URL: redis://redis:6379/0
+      UPLOAD_DIR: /data/uploads
     depends_on:
       db:
         condition: service_healthy
