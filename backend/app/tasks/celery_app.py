@@ -51,17 +51,19 @@ def ingest_document_task(
     source_type: str,
     filename: str,
     content_b64: str | None = None,
+    summarize: bool = True,
 ) -> dict:
     """
     Process and embed a document asynchronously.
     The file is read from upload_store. content_b64 carries it inline only in messages
     queued by versions before 0.3, which may still be waiting in Redis after an upgrade.
+    summarize=False skips the Claude summary that feeds the dashboard.
     """
     from app.services import upload_store
 
     content = base64.b64decode(content_b64) if content_b64 is not None else None
     try:
-        result = asyncio.run(_ingest_async(document_id, source_type, filename, content))
+        result = asyncio.run(_ingest_async(document_id, source_type, filename, content, summarize=summarize))
     except DocumentParseError as exc:
         upload_store.remove(document_id)
         return {"document_id": document_id, "status": "FAILED", "error": str(exc)}
@@ -117,6 +119,8 @@ async def _ingest_async(
     source_type: str,
     filename: str,
     content: bytes | None = None,
+    *,
+    summarize: bool = True,
 ) -> dict:
     """Ingest one document. With content=None the file is read from upload_store."""
     import redis.asyncio as aioredis
@@ -178,13 +182,16 @@ async def _ingest_async(
                 doc.chunk_count = len(raw_chunks)
                 doc.status = "COMPLETED"
 
-                try:
-                    from app.services.insights import extract_document_insights
+                from app.services import insights
 
-                    doc.insights_json = await extract_document_insights(filename, raw_chunks) or {}
-                except Exception:
-                    logger.warning("Insight extraction failed for %s", document_id, exc_info=True)
-                    doc.insights_json = {}
+                if not summarize:
+                    doc.insights_json = insights.SKIPPED
+                else:
+                    try:
+                        doc.insights_json = await insights.extract_document_insights(filename, raw_chunks) or {}
+                    except Exception:
+                        logger.warning("Insight extraction failed for %s", document_id, exc_info=True)
+                        doc.insights_json = {}
 
                 await db.commit()
             except Exception as exc:

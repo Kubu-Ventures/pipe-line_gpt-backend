@@ -46,7 +46,7 @@ def staged():
 def _run_task(monkeypatch, doc_id, behaviour):
     calls = []
 
-    async def fake_ingest(document_id, source_type, filename, content):
+    async def fake_ingest(document_id, source_type, filename, content, **_options):
         calls.append((content, upload_store.path_for(document_id).exists()))
         return behaviour(len(calls))
 
@@ -83,7 +83,7 @@ def test_task_keeps_staged_file_for_retries_then_removes_it(monkeypatch, staged)
 def test_task_still_accepts_inline_content_from_older_messages(monkeypatch):
     received = []
 
-    async def fake_ingest(document_id, source_type, filename, content):
+    async def fake_ingest(document_id, source_type, filename, content, **_options):
         received.append(content)
         return {"status": "COMPLETED"}
 
