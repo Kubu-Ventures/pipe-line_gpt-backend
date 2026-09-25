@@ -55,6 +55,8 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/requirements-*.txt
       - run: uv venv && uv pip install -r requirements-dev.txt
+      # Real OCR test (tests/unit/test_pdf_ocr.py); the Docker image bundles tesseract too.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr
       - run: uv run --no-project pytest --cov --cov-report=term-missing:skip-covered
 
   docker:

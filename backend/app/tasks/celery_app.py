@@ -6,6 +6,7 @@ import logging
 import uuid
 
 from celery import Celery
+from celery.exceptions import SoftTimeLimitExceeded
 
 from app.config import settings
 
@@ -27,9 +28,14 @@ celery_app.conf.update(
     task_acks_late=True,
     # Re-queue work from a worker that dies mid-task instead of losing it.
     task_reject_on_worker_lost=True,
-    # Large PDFs embed on CPU; bound runaway tasks.
-    task_soft_time_limit=1800,
-    task_time_limit=1900,
+    # Large PDFs embed on CPU and scanned ones are OCR'd at a few seconds per page
+    # (~2,000 pages fit in the soft limit); bound runaway tasks.
+    task_soft_time_limit=7200,
+    task_time_limit=7300,
+    # With acks_late, Redis hands a task still unacknowledged after the visibility
+    # timeout (default 1 h) to another worker. Keep it above the hard time limit so a
+    # long OCR job is not processed twice at once.
+    broker_transport_options={"visibility_timeout": 10_800},
     result_expires=86_400,
 )
 
@@ -55,6 +61,9 @@ def ingest_document_task(
         return asyncio.run(_ingest_async(document_id, source_type, filename, content))
     except DocumentParseError as exc:
         return {"document_id": document_id, "status": "FAILED", "error": str(exc)}
+    except SoftTimeLimitExceeded:
+        # Too big to finish in time; a retry would only repeat the same hours of work.
+        return {"document_id": document_id, "status": "FAILED", "error": "Processing exceeded the time limit"}
     except Exception as exc:
         raise self.retry(exc=exc, countdown=30 * (2**self.request.retries)) from exc
 
@@ -174,7 +183,13 @@ async def _ingest_async(
                 event_type="INGEST_COMPLETED",
                 target_id=document_id,
                 target_type="document",
-                payload={"filename": filename, "chunk_count": len(raw_chunks), "source_type": source_type},
+                payload={
+                    "filename": filename,
+                    "chunk_count": len(raw_chunks),
+                    "source_type": source_type,
+                    # Pages read by OCR (scans); their text may contain recognition errors.
+                    "ocr_pages": meta.get("ocr_pages", 0),
+                },
             )
 
         redis = aioredis.from_url(settings.redis_url, decode_responses=True)

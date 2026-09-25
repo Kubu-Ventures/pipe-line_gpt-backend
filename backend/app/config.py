@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _INSECURE_JWT_SECRETS = {"", "change-me-in-production", "secret", "changeme"}
@@ -53,6 +53,10 @@ class Settings(BaseSettings):
 
     max_tokens_per_day: int = 100_000
     upload_max_bytes: int = 52_428_800  # 50 MB
+    # OCR of scanned PDF pages (tesseract, bundled in the Docker image). Languages are
+    # tesseract codes joined with "+", e.g. "eng+spa"; each one slows OCR down.
+    ocr_enabled: bool = True
+    ocr_languages: str = Field(default="eng", pattern=r"^[a-z_]+(\+[a-z_]+)*$")
 
     hitl_confidence_threshold: float = 0.75
     top_k_retrieval: int = 12
