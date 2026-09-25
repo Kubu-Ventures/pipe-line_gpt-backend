@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.models.db import AuditEvent, Chunk, Document
+from app.services import upload_store
 from tests.integration.helpers import auth_headers
 
 CSV = (
@@ -47,8 +48,9 @@ async def test_upload_creates_document_and_dispatches(client, make_user, dispatc
     assert doc.source_type == "csv"
     assert doc.operator_id == operator.email
 
-    document_id, source_type, filename, _b64 = dispatched[0]
-    assert (document_id, source_type, filename) == (body["document_id"], "csv", "ili.csv")
+    # Only the ID travels through the queue; the file waits in the staging directory.
+    assert dispatched[0] == (body["document_id"], "csv", "ili.csv")
+    assert upload_store.read(body["document_id"]) == CSV
 
     audit = (await db_session.execute(select(AuditEvent).where(AuditEvent.event_type == "INGEST_SUBMITTED"))).scalars()
     assert len(audit.all()) == 1
@@ -225,3 +227,38 @@ async def test_worker_runs_in_separate_event_loops(db_session, monkeypatch):
 
 async def _no_insights(_filename, _chunks):
     return {}
+
+
+async def test_worker_reads_the_staged_file(db_session, monkeypatch):
+    from app.tasks.celery_app import _ingest_async
+
+    async def fake_embed(texts):
+        return [[0.1] * 384 for _ in texts]
+
+    monkeypatch.setattr("app.services.embedder.embed_texts", fake_embed)
+    monkeypatch.setattr("app.services.insights.extract_document_insights", _no_insights)
+
+    doc = Document(id=uuid.uuid4(), filename="ili.csv", source_type="csv", sha256_hash="h" * 64, status="PENDING")
+    db_session.add(doc)
+    await db_session.commit()
+    upload_store.save(str(doc.id), CSV)
+
+    result = await _ingest_async(str(doc.id), "csv", "ili.csv")
+    assert result["status"] == "COMPLETED"
+    assert result["chunk_count"] > 0
+
+
+async def test_worker_fails_cleanly_when_staged_file_is_missing(db_session):
+    """E.g. UPLOAD_DIR not shared between API and worker: the document must not stay PENDING."""
+    from app.tasks.celery_app import DocumentParseError, _ingest_async
+
+    doc = Document(id=uuid.uuid4(), filename="gone.csv", source_type="csv", sha256_hash="i" * 64, status="PENDING")
+    doc_id = doc.id
+    db_session.add(doc)
+    await db_session.commit()
+
+    with pytest.raises(DocumentParseError, match="missing from the staging directory"):
+        await _ingest_async(str(doc_id), "csv", "gone.csv")
+
+    doc = await db_session.get(Document, doc_id, populate_existing=True)
+    assert doc.status == "FAILED"

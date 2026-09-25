@@ -6,6 +6,12 @@ All notable changes to PipelineGPT are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `bulk-import` command to queue a whole folder of documents (e.g. decades of records) instead of uploading them one at a time. It streams files of any size up to `--max-mb`, skips files already ingested, and can be re-run after an interruption. See "Importing an archive" in `deploy/README.md`.
+
+### Changed
+- Uploaded files now wait for the worker in a shared `uploads` volume instead of inside the Redis queue, so a large backlog no longer fills Redis memory. Uploads queued before upgrading are still processed.
+
 ## [0.2.0] - 2026-09-25
 
 First self-hostable release.

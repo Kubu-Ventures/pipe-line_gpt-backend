@@ -44,19 +44,29 @@ def ingest_document_task(
     document_id: str,
     source_type: str,
     filename: str,
-    content_b64: str,
+    content_b64: str | None = None,
 ) -> dict:
     """
     Process and embed a document asynchronously.
-    Accepts content as base64-encoded string to survive Celery JSON serialisation.
+    The file is read from upload_store. content_b64 carries it inline only in messages
+    queued by versions before 0.3, which may still be waiting in Redis after an upgrade.
     """
-    content = base64.b64decode(content_b64)
+    from app.services import upload_store
+
+    content = base64.b64decode(content_b64) if content_b64 is not None else None
     try:
-        return asyncio.run(_ingest_async(document_id, source_type, filename, content))
+        result = asyncio.run(_ingest_async(document_id, source_type, filename, content))
     except DocumentParseError as exc:
+        upload_store.remove(document_id)
         return {"document_id": document_id, "status": "FAILED", "error": str(exc)}
     except Exception as exc:
+        # Keep the staged file for the retry; drop it once retries are exhausted.
+        if self.request.retries >= self.max_retries:
+            upload_store.remove(document_id)
+            raise
         raise self.retry(exc=exc, countdown=30 * (2**self.request.retries)) from exc
+    upload_store.remove(document_id)
+    return result
 
 
 def _parse(source_type: str, filename: str, content: bytes) -> tuple[list[dict], dict]:
@@ -81,12 +91,24 @@ def _parse(source_type: str, filename: str, content: bytes) -> tuple[list[dict],
         raise DocumentParseError(f"Could not parse {filename}: {type(exc).__name__}") from exc
 
 
+def _read_staged(document_id: str, filename: str) -> bytes:
+    from app.services import upload_store
+
+    try:
+        return upload_store.read(document_id)
+    except FileNotFoundError as exc:
+        # Usually UPLOAD_DIR is not shared between the API and the worker.
+        logger.error("Staged file for %s not found at %s", document_id, upload_store.path_for(document_id))
+        raise DocumentParseError(f"The uploaded file for {filename} is missing from the staging directory") from exc
+
+
 async def _ingest_async(
     document_id: str,
     source_type: str,
     filename: str,
-    content: bytes,
+    content: bytes | None = None,
 ) -> dict:
+    """Ingest one document. With content=None the file is read from upload_store."""
     import redis.asyncio as aioredis
     from sqlalchemy import delete, select
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -114,6 +136,8 @@ async def _ingest_async(
             await db.commit()
 
             try:
+                if content is None:
+                    content = _read_staged(document_id, filename)
                 raw_chunks, meta = _parse(source_type, filename, content)
                 if not raw_chunks:
                     raise DocumentParseError(f"No text could be extracted from {filename}")

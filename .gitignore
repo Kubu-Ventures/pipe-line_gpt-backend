@@ -20,6 +20,9 @@ htmlcov/
 .env.*
 !.env.example
 
+# Uploads staged for the worker in local dev
+backend/data/
+
 # Model caches (fastembed / HF)
 .cache/
 local_cache/

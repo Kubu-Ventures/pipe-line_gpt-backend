@@ -37,6 +37,9 @@ case "$role" in
   llm-check)
     exec python check_llm.py "$@"
     ;;
+  bulk-import)
+    exec python bulk_import.py "$@"
+    ;;
   *)
     exec "$role" "$@"
     ;;

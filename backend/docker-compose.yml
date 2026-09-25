@@ -36,6 +36,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - uploads:/data/uploads   # shared with the worker: uploads wait here
     command: ["api"]   # applies migrations, then serves on :8000
 
   celery_worker:
@@ -50,6 +52,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - uploads:/data/uploads
     command: ["worker"]
 
   flower:
@@ -66,3 +70,4 @@ services:
 
 volumes:
   pgdata:
+  uploads:
