@@ -27,6 +27,7 @@ from app.middleware.rate_limit import (
 from app.models.db import Invitation, User
 from app.models.schemas import (
     AcceptInviteRequest,
+    DemoAccountsResponse,
     LoginRequest,
     MFASetupResponse,
     MFAVerifyRequest,
@@ -38,6 +39,14 @@ from app.services import audit_log
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 MFA_REQUIRED_ROLES = ("ENGINEER", "ADMIN")
+
+# Seeded by seed_demo.py. Their passwords are public, so the login page offers them
+# only in DEMO_MODE, and only while an admin leaves them ACTIVE.
+DEMO_ACCOUNT_EMAILS = (
+    "demo-operator@pipelinegpt.xyz",
+    "demo-engineer@pipelinegpt.xyz",
+    "demo-admin@pipelinegpt.xyz",
+)
 
 
 def _client_ip(request: Request) -> str | None:
@@ -125,6 +134,15 @@ async def login(
         access_token=create_access_token(str(user.id), user.role, scope=scope),
         mfa_setup_required=mfa_setup_required,
     )
+
+
+@router.get("/demo-accounts", response_model=DemoAccountsResponse)
+async def demo_accounts(db: Annotated[AsyncSession, Depends(get_db)]) -> DemoAccountsResponse:
+    """Roles whose demo account can sign in right now. Always empty outside DEMO_MODE."""
+    if not settings.demo_mode:
+        return DemoAccountsResponse(roles=[])
+    result = await db.execute(select(User.role).where(User.email.in_(DEMO_ACCOUNT_EMAILS), User.status == "ACTIVE"))
+    return DemoAccountsResponse(roles=sorted(result.scalars()))
 
 
 @router.get("/me", response_model=UserOut)

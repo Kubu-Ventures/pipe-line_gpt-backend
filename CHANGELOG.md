@@ -7,6 +7,7 @@ All notable changes to PipelineGPT are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `GET /auth/demo-accounts` (public) lists the roles whose demo account is active, so the login page shows a one-click demo button only for accounts that can sign in. Suspending a demo account hides its button without rebuilding the frontend. Always empty when `DEMO_MODE` is off.
 - `GET /ingest/config` returns the upload size limit and accepted file types, so the upload page checks files against the server's real settings. `POST /ingest` takes an optional `relative_path`: files uploaded from a folder keep their path as their name (e.g. `records/2009/ILI/report.pdf`), as bulk import does.
 - `ops/pilots/provision.sh` sets up a hosted pilot on a fresh VM in one command: installs Docker if needed, deploys the release bundle, runs the installer unattended, schedules daily backups, loads the pilot's documents, and keeps the admin password and a copy of the server's `.env` on your machine. See `ops/pilots/README.md`.
 - `install.sh` can run unattended: answers already set as environment variables (domain, AI provider settings, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, …) are not asked for. Run from a terminal, it asks as before.

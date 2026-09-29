@@ -163,3 +163,27 @@ async def test_short_invite_password_rejected(client, make_user):
     ).json()["token"]
     resp = await client.post("/auth/accept-invite", json={"token": token, "password": "short-pass"})
     assert resp.status_code == 422
+
+
+async def test_demo_accounts_empty_outside_demo_mode(client, make_user):
+    await make_user("OPERATOR", email="demo-operator@pipelinegpt.xyz")
+    resp = await client.get("/auth/demo-accounts")
+    assert resp.status_code == 200
+    assert resp.json() == {"roles": []}
+
+
+async def test_demo_accounts_lists_only_active_demo_users(client, make_user, monkeypatch):
+    monkeypatch.setattr("app.config.settings.demo_mode", True)
+    await make_user("OPERATOR", email="demo-operator@pipelinegpt.xyz")
+    await make_user("ENGINEER", email="demo-engineer@pipelinegpt.xyz", status="SUSPENDED")
+    await make_user("ADMIN")  # a real admin is never offered as a demo button
+
+    resp = await client.get("/auth/demo-accounts")
+    assert resp.json() == {"roles": ["OPERATOR"]}
+
+
+def test_demo_account_emails_match_seed_script():
+    from app.routers.auth import DEMO_ACCOUNT_EMAILS
+    from seed_demo import DEMO_ACCOUNTS
+
+    assert set(DEMO_ACCOUNT_EMAILS) == {acc["email"] for acc in DEMO_ACCOUNTS}
