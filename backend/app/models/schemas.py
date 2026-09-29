@@ -12,6 +12,10 @@ class TokenResponse(BaseModel):
     mfa_setup_required: bool = False
 
 
+class DemoAccountsResponse(BaseModel):
+    roles: list[str]
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., max_length=256)
