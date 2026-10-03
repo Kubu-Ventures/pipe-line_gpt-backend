@@ -135,3 +135,11 @@ async def test_skip_summaries_is_passed_to_every_task_and_audited(db_session, tm
 
     audit = (await db_session.execute(select(AuditEvent).where(AuditEvent.event_type == "INGEST_SUBMITTED"))).scalars()
     assert {e.payload_json["summarize"] for e in audit.all()} == {False}
+
+
+async def test_tags_every_queued_document(db_session, tmp_path):
+    make_archive(tmp_path)
+    await run(db_session, tmp_path, segment_id=" SEG-TX-4B ", commodity="Natural Gas")
+
+    docs = (await db_session.execute(select(Document))).scalars().all()
+    assert {(d.segment_id, d.commodity) for d in docs} == {("SEG-TX-4B", "Natural Gas")}

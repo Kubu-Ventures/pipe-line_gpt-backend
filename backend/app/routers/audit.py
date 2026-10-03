@@ -39,6 +39,7 @@ _EVENT_META: dict[str, tuple[str, str, str]] = {
     "INGEST_COMPLETED": ("Document Management", "Document Ingested", "49 CFR §192.911 (records)"),
     "INGEST_FAILED": ("Document Management", "Document Ingestion Failed", "49 CFR §192.911 (records)"),
     "DOCUMENT_DELETED": ("Document Management", "Document Deleted", "49 CFR §192.911 (records)"),
+    "DOCUMENT_TAGS_UPDATED": ("Document Management", "Document Tags Updated", "49 CFR §192.911 (records)"),
     "QUERY_FAILED": ("AI Query", "Query Failed", "49 CFR §192.911"),
     "USER_LOGIN": ("Security", "User Login", "49 CFR §192.911 (access control)"),
     "USER_LOGIN_FAILED": ("Security", "Failed Sign-in", "49 CFR §192.911 (access control)"),

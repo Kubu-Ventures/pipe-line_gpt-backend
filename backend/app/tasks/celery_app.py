@@ -156,8 +156,9 @@ async def _ingest_async(
                 if not raw_chunks:
                     raise DocumentParseError(f"No text could be extracted from {filename}")
 
+                # Read from the file only what the uploader didn't tag (PHMSA: years, commodity).
                 for field in ("year_from", "year_to", "commodity"):
-                    if field in meta:
+                    if field in meta and getattr(doc, field) is None:
                         setattr(doc, field, meta[field])
 
                 texts = [c["text_content"] for c in raw_chunks]

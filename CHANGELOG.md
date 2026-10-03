@@ -7,6 +7,8 @@ All notable changes to PipelineGPT are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `PATCH /ingest/{id}` (engineers and admins) sets or clears a document's `segment_id` and `commodity`, so documents uploaded before this release can be tagged. Changes are audited as `DOCUMENT_TAGS_UPDATED` and clear the answer cache.
+- `bulk-import --segment ID --commodity NAME` tags every document queued from a folder.
 - `GET /auth/demo-accounts` (public) lists the roles whose demo account is active, so the login page shows a one-click demo button only for accounts that can sign in. Suspending a demo account hides its button without rebuilding the frontend. Always empty when `DEMO_MODE` is off.
 - `GET /ingest/config` returns the upload size limit and accepted file types, so the upload page checks files against the server's real settings. `POST /ingest` takes an optional `relative_path`: files uploaded from a folder keep their path as their name (e.g. `records/2009/ILI/report.pdf`), as bulk import does.
 - `ops/pilots/provision.sh` sets up a hosted pilot on a fresh VM in one command: installs Docker if needed, deploys the release bundle, runs the installer unattended, schedules daily backups, loads the pilot's documents, and keeps the admin password and a copy of the server's `.env` on your machine. See `ops/pilots/README.md`.
@@ -18,6 +20,7 @@ All notable changes to PipelineGPT are documented here. The format follows
 - Scanned PDFs are now read with OCR (Tesseract, bundled in the image), page by page wherever a page has no text layer. Citations from those pages are labelled "Page N (OCR)" and the ingest audit event records how many pages were OCR'd. `OCR_LANGUAGES` selects the languages (default `eng`; packs for all ten UI languages are bundled), `OCR_ENABLED=false` turns it off.
 
 ### Fixed
+- Questions filtered by pipeline segment found nothing in uploaded documents: no upload path ever set a document's segment, so the filter had nothing to match. `POST /ingest` now takes optional `segment_id` and `commodity` fields (trimmed, up to 100 characters, matched exactly by the query filters). A commodity entered at upload is no longer replaced by the one read from a PHMSA file.
 - `.tsv` uploads from a browser were rejected: browsers send them as `text/tab-separated-values`, which wasn't an accepted type.
 - Development stack (`backend/docker-compose.yml`): a `.env` created from `.env.example` set `UPLOAD_DIR=data/uploads` inside the containers, so the API and worker no longer shared staged uploads and every upload failed with "missing from the staging directory". The compose file now sets `UPLOAD_DIR=/data/uploads` itself.
 - `install.sh` wrote secrets through `sed` arguments, which exposed them in the server's process list while it ran and broke on values containing `|`, `&` or `\` (an AWS secret key with `&` was saved corrupted; a `|` aborted the install). It now writes `.env` with shell built-ins.

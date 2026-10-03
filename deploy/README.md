@@ -97,6 +97,7 @@ docker compose run --rm -v /srv/records:/import:ro api bulk-import /import --ope
 - Supported files are PDF, CSV, TSV/TXT (PHMSA) and PHMSA ZIP. Anything else, empty files and files over `--max-mb` (default 200) are listed as skipped.
 - Files whose content is already in the knowledge base are skipped, so an interrupted import can be run again with the same command.
 - Each document is listed under its path inside the folder (e.g. `2009/ILI/segment-14.pdf`), which shows up in citations.
+- If the folder covers a single pipeline segment or commodity, add `--segment SEG-TX-4B` and/or `--commodity "Natural Gas"` so questions filtered by segment or commodity find these documents. Import one folder per segment to tag several. Engineers can change a document's tags later (`PATCH /backend/ingest/<document id>`).
 - The command only queues. The workers process the files in the background; follow progress on the Documents page or in the task monitor. Raise `WORKER_CONCURRENCY` in `.env` (about one per vCPU) to go faster.
 - Queued files are held in the `uploads` volume until they are processed, so allow free disk space of about the size of the folder.
 - Each document also gets one AI call to summarise it for the dashboard, which counts against your AI provider's usage. For a large archive, add `--skip-summaries` to leave that out: the documents are still fully searchable in chat, but don't feed the dashboard's attention items and document summaries (its "Refresh" leaves them out too).

@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingest.file_types import has_valid_magic, source_type_for
+from app.ingest.tags import clean_tag
 from app.models.db import Document
 from app.services import audit_log, upload_store
 
@@ -76,12 +77,16 @@ async def import_folder(
     operator_id: str,
     max_bytes: int,
     summarize: bool = True,
+    segment_id: str | None = None,
+    commodity: str | None = None,
     dry_run: bool = False,
     report: Callable[[str, str, str], None] = lambda _name, _outcome, _detail: None,
 ) -> Counter:
     """Queue the files under root. dispatch(document_id, source_type, filename, summarize=...)
     must return an object with an .id (the Celery task). summarize=False skips the per-document
-    Claude summary. Returns a count of each outcome."""
+    Claude summary. segment_id and commodity tag every queued document, for an archive that
+    covers one segment. Returns a count of each outcome."""
+    segment_id, commodity = clean_tag(segment_id), clean_tag(commodity)
     counts: Counter = Counter()
     seen_in_run: dict[str, str] = {}  # sha256 -> name
     root = await asyncio.to_thread(root.resolve)
@@ -123,6 +128,8 @@ async def import_folder(
                 sha256_hash=sha256,
                 status="PENDING",
                 operator_id=operator_id,
+                segment_id=segment_id,
+                commodity=commodity,
             )
         )
         try:
@@ -147,6 +154,8 @@ async def import_folder(
                 "task_id": task.id,
                 "via": "bulk_import",
                 "summarize": summarize,
+                "segment_id": segment_id,
+                "commodity": commodity,
             },
         )
         counts[QUEUED] += 1

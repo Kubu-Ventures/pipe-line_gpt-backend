@@ -3,6 +3,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
+from app.ingest.tags import TAG_MAX
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 
@@ -132,6 +134,13 @@ class DocumentItem(BaseModel):
     segment_id: str | None
     commodity: str | None
     uploaded_by: str | None
+
+
+class DocumentTagsUpdate(BaseModel):
+    """Fields left out stay as they are; null or blank clears a tag."""
+
+    segment_id: str | None = Field(default=None, max_length=TAG_MAX)
+    commodity: str | None = Field(default=None, max_length=TAG_MAX)
 
 
 class DocumentSummary(BaseModel):

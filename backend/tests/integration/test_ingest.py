@@ -291,3 +291,166 @@ async def test_tsv_upload_with_browser_mime_type(client, make_user, dispatched):
     tsv = b"REPORT_NUMBER\tCAUSE\n2009001\tCorrosion\n"
     resp = await upload(client, await make_user("OPERATOR"), tsv, "incidents.tsv", "text/tab-separated-values")
     assert resp.status_code == 202
+
+
+# ── Segment and commodity tags ───────────────────────────────────────────────
+
+
+async def fake_embed(texts):
+    return [[0.1] * 384 for _ in texts]
+
+
+async def no_insights(_filename, _chunks):
+    return {}
+
+
+async def test_upload_tags_document_with_segment_and_commodity(client, make_user, dispatched, db_session):
+    operator = await make_user("OPERATOR")
+    resp = await client.post(
+        "/ingest",
+        files={"file": ("ili.csv", CSV, "text/csv")},
+        data={"segment_id": "  SEG-TX-4B ", "commodity": "Natural   Gas"},
+        headers=auth_headers(operator),
+    )
+    assert resp.status_code == 202
+
+    doc = await db_session.get(Document, uuid.UUID(resp.json()["document_id"]))
+    assert (doc.segment_id, doc.commodity) == ("SEG-TX-4B", "Natural Gas")
+    event = (
+        await db_session.execute(select(AuditEvent).where(AuditEvent.event_type == "INGEST_SUBMITTED"))
+    ).scalar_one()
+    assert event.payload_json["segment_id"] == "SEG-TX-4B"
+
+
+async def test_blank_tags_leave_document_untagged(client, make_user, dispatched, db_session):
+    operator = await make_user("OPERATOR")
+    resp = await client.post(
+        "/ingest",
+        files={"file": ("ili.csv", CSV, "text/csv")},
+        data={"segment_id": "   ", "commodity": ""},
+        headers=auth_headers(operator),
+    )
+    doc = await db_session.get(Document, uuid.UUID(resp.json()["document_id"]))
+    assert (doc.segment_id, doc.commodity) == (None, None)
+
+
+async def test_overlong_segment_rejected(client, make_user, dispatched):
+    operator = await make_user("OPERATOR")
+    resp = await client.post(
+        "/ingest",
+        files={"file": ("ili.csv", CSV, "text/csv")},
+        data={"segment_id": "S" * 101},
+        headers=auth_headers(operator),
+    )
+    assert resp.status_code == 422
+    assert dispatched == []
+
+
+async def test_segment_filter_finds_uploaded_document(client, make_user, dispatched, db_session, monkeypatch):
+    """The gap this closes: uploads never set segment_id, so a segment filter found nothing."""
+    from app.models.schemas import QueryFilters
+    from app.services.retriever import retrieve_chunks
+    from app.tasks.celery_app import _ingest_async
+
+    monkeypatch.setattr("app.services.embedder.embed_texts", fake_embed)
+    monkeypatch.setattr("app.services.insights.extract_document_insights", no_insights)
+
+    operator = await make_user("OPERATOR")
+    resp = await client.post(
+        "/ingest",
+        files={"file": ("ili.csv", CSV, "text/csv")},
+        data={"segment_id": "SEG-TX-4B"},
+        headers=auth_headers(operator),
+    )
+    doc_id = resp.json()["document_id"]
+    assert (await _ingest_async(doc_id, "csv", "ili.csv", CSV))["status"] == "COMPLETED"
+
+    matching = await retrieve_chunks(db_session, [0.1] * 384, QueryFilters(pipeline_segment="SEG-TX-4B"), top_k=5)
+    assert matching and {c["document_id"] for c in matching} == {doc_id}
+    assert matching[0]["segment_id"] == "SEG-TX-4B"
+    assert await retrieve_chunks(db_session, [0.1] * 384, QueryFilters(pipeline_segment="SEG-TX-7A"), top_k=5) == []
+
+
+async def test_worker_keeps_commodity_the_uploader_entered(db_session, monkeypatch):
+    from app.tasks.celery_app import _ingest_async
+
+    monkeypatch.setattr("app.services.embedder.embed_texts", fake_embed)
+    monkeypatch.setattr("app.services.insights.extract_document_insights", no_insights)
+    tsv = b"IYEAR\tCOMMODITY\tCAUSE\n2019\tNATURAL GAS\tCORROSION\n2021\tNATURAL GAS\tEXCAVATION DAMAGE\n"
+
+    doc = Document(
+        id=uuid.uuid4(),
+        filename="incidents.tsv",
+        source_type="phmsa",
+        sha256_hash="d" * 64,
+        status="PENDING",
+        commodity="Natural Gas Transmission",
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    doc_id = doc.id
+
+    assert (await _ingest_async(str(doc_id), "phmsa", "incidents.tsv", tsv))["status"] == "COMPLETED"
+    doc = await db_session.get(Document, doc_id, populate_existing=True)
+    assert doc.commodity == "Natural Gas Transmission"
+    assert (doc.year_from, doc.year_to) == (2019, 2021)  # still read from the file
+
+
+async def make_document(db_session, **tags):
+    doc = Document(
+        id=uuid.uuid4(),
+        filename="ili.csv",
+        source_type="csv",
+        sha256_hash=uuid.uuid4().hex * 2,
+        status="COMPLETED",
+        **tags,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    return doc.id
+
+
+async def test_engineer_tags_existing_document(client, make_user, db_session):
+    engineer = await make_user("ENGINEER")
+    doc_id = await make_document(db_session, commodity="Crude Oil")
+
+    resp = await client.patch(f"/ingest/{doc_id}", json={"segment_id": " SEG-TX-4B "}, headers=auth_headers(engineer))
+    assert resp.status_code == 200
+    assert (resp.json()["segment_id"], resp.json()["commodity"]) == ("SEG-TX-4B", "Crude Oil")  # untouched
+
+    resp = await client.patch(f"/ingest/{doc_id}", json={"commodity": None}, headers=auth_headers(engineer))
+    assert (resp.json()["segment_id"], resp.json()["commodity"]) == ("SEG-TX-4B", None)
+
+    changes = [
+        e.payload_json["changes"]
+        for e in (await db_session.execute(select(AuditEvent).where(AuditEvent.event_type == "DOCUMENT_TAGS_UPDATED")))
+        .scalars()
+        .all()
+    ]
+    assert sorted(changes, key=str) == sorted(
+        [{"segment_id": {"from": None, "to": "SEG-TX-4B"}}, {"commodity": {"from": "Crude Oil", "to": None}}], key=str
+    )
+
+
+async def test_unchanged_tags_write_no_audit_event(client, make_user, db_session):
+    engineer = await make_user("ENGINEER")
+    doc_id = await make_document(db_session, segment_id="SEG-TX-4B")
+    resp = await client.patch(f"/ingest/{doc_id}", json={"segment_id": "SEG-TX-4B"}, headers=auth_headers(engineer))
+    assert resp.status_code == 200
+    count = await db_session.scalar(
+        select(func.count()).select_from(AuditEvent).where(AuditEvent.event_type == "DOCUMENT_TAGS_UPDATED")
+    )
+    assert count == 0
+
+
+async def test_operator_cannot_retag_documents(client, make_user, db_session):
+    operator = await make_user("OPERATOR")
+    doc_id = await make_document(db_session)
+    resp = await client.patch(f"/ingest/{doc_id}", json={"segment_id": "SEG-TX-4B"}, headers=auth_headers(operator))
+    assert resp.status_code == 403
+
+
+async def test_retag_unknown_document_is_404(client, make_user):
+    engineer = await make_user("ENGINEER")
+    resp = await client.patch(f"/ingest/{uuid.uuid4()}", json={"segment_id": "X"}, headers=auth_headers(engineer))
+    assert resp.status_code == 404
