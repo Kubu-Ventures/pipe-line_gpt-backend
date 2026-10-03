@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.ingest.file_types import EXTENSION_TO_SOURCE_TYPE, display_name, has_valid_magic, source_type_for
+from app.ingest.tags import TAG_MAX, clean_tag
 from app.middleware.auth import RequireEngineer, RequireOperator, get_db
 from app.middleware.rate_limit import get_redis
 from app.models.db import Document, User
@@ -17,6 +18,7 @@ from app.models.schemas import (
     DocumentItem,
     DocumentPage,
     DocumentSummary,
+    DocumentTagsUpdate,
     IngestResponse,
     IngestStatusResponse,
     UploadConfig,
@@ -48,6 +50,14 @@ async def ingest_file(
     relative_path: Annotated[
         str | None,
         Form(max_length=1024, description="Path of the file inside an uploaded folder, kept as its name"),
+    ] = None,
+    segment_id: Annotated[
+        str | None,
+        Form(max_length=TAG_MAX, description="Pipeline segment the document covers, e.g. SEG-TX-4B"),
+    ] = None,
+    commodity: Annotated[
+        str | None,
+        Form(max_length=TAG_MAX, description="Commodity the document covers, e.g. Natural Gas"),
     ] = None,
 ) -> IngestResponse:
     """Upload a document for async ingestion. Returns a task_id for status polling."""
@@ -98,6 +108,7 @@ async def ingest_file(
     # Stage the file for the worker, then create the document record
     doc_id = uuid.uuid4()
     await asyncio.to_thread(upload_store.save, str(doc_id), content)
+    # Query filters match these tags exactly; without them a segment filter can't find the document.
     doc = Document(
         id=doc_id,
         filename=filename,
@@ -105,6 +116,8 @@ async def ingest_file(
         sha256_hash=sha256,
         status="PENDING",
         operator_id=user.email,
+        segment_id=clean_tag(segment_id),
+        commodity=clean_tag(commodity),
     )
     db.add(doc)
     await db.commit()
@@ -118,7 +131,13 @@ async def ingest_file(
         actor_id=str(user.id),
         target_id=str(doc_id),
         target_type="document",
-        payload={"filename": filename, "source_type": source_type, "task_id": task.id},
+        payload={
+            "filename": filename,
+            "source_type": source_type,
+            "task_id": task.id,
+            "segment_id": doc.segment_id,
+            "commodity": doc.commodity,
+        },
         ip_address=request.client.host if request.client else None,
     )
 
@@ -284,6 +303,54 @@ async def get_chunk_text(
         "section_label": chunk.section_label,
         "page_ref": chunk.page_ref,
     }
+
+
+@router.patch("/{document_id}", response_model=DocumentItem)
+async def update_document_tags(
+    document_id: uuid.UUID,
+    body: DocumentTagsUpdate,
+    request: Request,
+    user: Annotated[User, Depends(RequireEngineer)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> DocumentItem:
+    """Set or clear a document's segment and commodity, e.g. for documents uploaded untagged.
+    Restricted to engineers and admins: tags decide what filtered questions can see."""
+    doc = await db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    changes: dict[str, dict[str, str | None]] = {}
+    for field in sorted(body.model_fields_set):
+        new, old = clean_tag(getattr(body, field)), getattr(doc, field)
+        if new != old:
+            changes[field] = {"from": old, "to": new}
+            setattr(doc, field, new)
+
+    if changes:
+        await db.commit()
+        # Cached answers are scoped by filters, so one for this segment may now be missing the document.
+        await semantic_cache.invalidate(get_redis())
+        await audit_log.log_event(
+            db,
+            event_type="DOCUMENT_TAGS_UPDATED",
+            actor_id=str(user.id),
+            target_id=str(document_id),
+            target_type="document",
+            payload={"filename": doc.filename, "changes": changes},
+            ip_address=request.client.host if request.client else None,
+        )
+
+    return DocumentItem(
+        id=str(doc.id),
+        filename=doc.filename,
+        source_type=doc.source_type,
+        status=doc.status,
+        chunk_count=doc.chunk_count or 0,
+        ingest_date=doc.ingest_date,
+        segment_id=doc.segment_id,
+        commodity=doc.commodity,
+        uploaded_by=doc.operator_id,
+    )
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_200_OK)
