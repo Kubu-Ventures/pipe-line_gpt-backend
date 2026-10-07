@@ -126,15 +126,111 @@ def build_context_block(chunks: list[dict]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+# A citation tag: [SRC-001], [SOURCE_ID=SRC-001], or a list such as [SRC-001, SRC-004].
+_CITATION_TAG_RE = re.compile(r"\[[^\[\]]*\bSRC-\d+[^\[\]]*\]")
+_SOURCE_ID_RE = re.compile(r"\bSRC-\d+")
+_HEADING_RE = re.compile(r"^\s*#")
+_TABLE_ROW_RE = re.compile(r"^\s*\|")
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
+_THOUSANDS_SEP_RE = re.compile(r"(?<=\d),(?=\d{3}\b)")
+_NUMBER_RE = re.compile(r"\d+")
+# A regulation reference such as "49 CFR §192.619(a)(2)" or "49 CFR Part 192" is not a claim.
+_CFR_REF_RE = re.compile(r"\b\d+\s+CFR\b(?:\s+(?:Part\s+)?§*\s*[\d.]+(?:\([0-9a-zA-Z]+\))*)?", re.IGNORECASE)
+
+
+def _cited_ids(text: str) -> list[str]:
+    return [sid for tag in _CITATION_TAG_RE.findall(text) for sid in _SOURCE_ID_RE.findall(tag)]
+
+
+def _figures(text: str) -> set[str]:
+    """Digit runs in `text`, ignoring citation tags, a leading list marker, CFR references and thousands separators."""
+    text = _CFR_REF_RE.sub("", _LIST_ITEM_RE.sub("", _CITATION_TAG_RE.sub("", text), count=1))
+    return set(_NUMBER_RE.findall(_THOUSANDS_SEP_RE.sub("", text)))
+
+
+def _blocks(answer: str) -> list[tuple[str, list[str]]]:
+    """
+    Split an answer into (kind, lines) blocks: "heading", "table" (consecutive rows),
+    "list" (consecutive items with indented continuations), "cite" (a line holding only
+    citation tags) or "prose" (one line). Blank lines separate blocks and are dropped.
+    """
+    blocks: list[tuple[str, list[str]]] = []
+    for line in answer.splitlines():
+        if not line.strip():
+            blocks.append(("blank", []))
+            continue
+        if _HEADING_RE.match(line):
+            kind = "heading"
+        elif _TABLE_ROW_RE.match(line):
+            kind = "table"
+        elif _LIST_ITEM_RE.match(line) or (line[:1].isspace() and blocks and blocks[-1][0] == "list"):
+            kind = "list"
+        elif _cited_ids(line) and not _CITATION_TAG_RE.sub("", line).strip(" .,;:"):
+            kind = "cite"
+        else:
+            kind = "prose"
+        if kind in ("table", "list") and blocks and blocks[-1][0] == kind:
+            blocks[-1][1].append(line)
+        else:
+            blocks.append((kind, [line]))
+    return [block for block in blocks if block[0] != "blank"]
+
+
 def estimate_confidence(answer: str, chunks: list[dict]) -> float:
     """
-    Heuristic confidence: ratio of [SRC-NNN] citations present in the answer
-    against the number of chunks provided.
+    Heuristic confidence: how much of the answer is backed by the retrieved sources.
+
+    A "claim" is an answer line that states a figure (a digit outside citation tags and
+    list numbering): dates, pressures, MAOPs, report numbers. Headings and lines without
+    figures are ignored. A claim is backed when its block cites a retrieved source, where
+    a citation covers the whole list or table it sits in, a citation on its own line
+    (or any cited block right after a list or table) covers the block above it, a cited line ending in ":" covers the list or table after
+    it, and a cited heading covers its section. A claim whose figures all appear in the
+    retrieved text also counts as backed (e.g. an uncited summary table restating them).
+
+    The score is the share of backed claims, scaled by the share of citations that point
+    at a retrieved source. Citing only the relevant sources is not penalized.
     """
     if not chunks:
         return 0.5
-    cited = set(re.findall(r"\[SOURCE_ID=SRC-\d+\]|\[SRC-\d+\]", answer))
-    return min(1.0, len(cited) / max(1, len(chunks)))
+    valid_ids = {chunk["_source_id"] for chunk in chunks if chunk.get("_source_id")}
+    cited = _cited_ids(answer)
+    if not cited:
+        return 0.0
+    valid_share = sum(sid in valid_ids for sid in cited) / len(cited)
+    source_figures = set().union(*(_figures(chunk.get("text_content") or "") for chunk in chunks))
+
+    def cites_valid(lines: list[str]) -> bool:
+        return any(sid in valid_ids for line in lines for sid in _cited_ids(line))
+
+    blocks = _blocks(answer)
+    claims = backed = 0
+    section_cited = False
+    for i, (kind, lines) in enumerate(blocks):
+        if kind == "heading":
+            section_cited = cites_valid(lines)
+            continue
+        prev_kind, prev_lines = blocks[i - 1] if i > 0 else ("", [])
+        next_kind, next_lines = blocks[i + 1] if i + 1 < len(blocks) else ("", [])
+        supported = (
+            section_cited
+            or cites_valid(lines)
+            or ((next_kind == "cite" or kind in ("list", "table")) and cites_valid(next_lines))
+            or (
+                kind in ("list", "table")
+                and prev_kind == "prose"
+                and cites_valid(prev_lines)
+                and _CITATION_TAG_RE.sub("", prev_lines[-1]).rstrip().endswith(":")
+            )
+        )
+        for line in lines:
+            figures = _figures(line)
+            if not figures:
+                continue
+            claims += 1
+            backed += supported or figures <= source_figures
+    claim_share = backed / claims if claims else 1.0
+    return claim_share * valid_share
 
 
 def extract_citations(answer: str, chunks: list[dict]) -> list[Citation]:

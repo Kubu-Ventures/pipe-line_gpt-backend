@@ -83,6 +83,26 @@ async def retrieve_chunks(
     return chunks
 
 
+RRF_K = 60
+
+
+def fuse_results(result_lists: list[list[dict]]) -> list[dict]:
+    """
+    Merge per-variant retrieval results with reciprocal rank fusion, best first.
+
+    Similarity scores from different query embeddings aren't comparable: a short
+    rephrasing scores higher against generic chunks than the full question does
+    against the one chunk it names. Rank positions are, so those are combined.
+    """
+    scores: dict[str, float] = {}
+    chunks: dict[str, dict] = {}
+    for results in result_lists:
+        for rank, chunk in enumerate(results):
+            chunks.setdefault(chunk["id"], chunk)
+            scores[chunk["id"]] = scores.get(chunk["id"], 0.0) + 1 / (RRF_K + rank)
+    return sorted(chunks.values(), key=lambda c: scores[c["id"]], reverse=True)
+
+
 @lru_cache(maxsize=1)
 def _cross_encoder():
     from sentence_transformers import CrossEncoder
@@ -91,7 +111,11 @@ def _cross_encoder():
 
 
 def rerank_chunks(query: str, chunks: list[dict], top_k: int | None = None) -> list[dict]:
-    """Rerank retrieved chunks with a cross-encoder; CPU-bound, so call via a thread from async code."""
+    """
+    Rerank retrieved chunks with a cross-encoder; CPU-bound, so call via a thread from async code.
+
+    Without the cross-encoder, the incoming order is kept (fused order from `fuse_results`).
+    """
     k = top_k or settings.top_k_rerank
     if not chunks:
         return []
@@ -99,13 +123,13 @@ def rerank_chunks(query: str, chunks: list[dict], top_k: int | None = None) -> l
     try:
         model = _cross_encoder()
     except ImportError:
-        # sentence-transformers is optional (lean install): fall back to vector similarity order.
-        return sorted(chunks, key=lambda c: c.get("similarity", 0), reverse=True)[:k]
+        # sentence-transformers is optional (lean install): keep the fused retrieval order.
+        return chunks[:k]
 
     try:
         scores = model.predict([(query, c["text_content"]) for c in chunks])
         ranked = sorted(zip(scores, chunks, strict=True), key=lambda x: x[0], reverse=True)
         return [c for _, c in ranked[:k]]
     except Exception:
-        logger.warning("Cross-encoder rerank failed; using similarity order", exc_info=True)
-        return sorted(chunks, key=lambda c: c.get("similarity", 0), reverse=True)[:k]
+        logger.warning("Cross-encoder rerank failed; using fused retrieval order", exc_info=True)
+        return chunks[:k]
