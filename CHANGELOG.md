@@ -20,6 +20,8 @@ All notable changes to PipelineGPT are documented here. The format follows
 - Scanned PDFs are now read with OCR (Tesseract, bundled in the image), page by page wherever a page has no text layer. Citations from those pages are labelled "Page N (OCR)" and the ingest audit event records how many pages were OCR'd. `OCR_LANGUAGES` selects the languages (default `eng`; packs for all ten UI languages are bundled), `OCR_ENABLED=false` turns it off.
 
 ### Fixed
+- The first query on each API worker no longer takes 15 to 30 s longer than the rest. The API now loads the embedder, PII engine and reranker at startup, before it accepts requests (set `WARM_MODELS_ON_STARTUP=false` to skip). Startup takes longer instead, so the image healthcheck now allows 120 s.
+- The image no longer logs "Permission denied" on a fastembed cache file each time a model loads: the baked-in model files are now readable by the non-root runtime user.
 - Factual answers were held for engineer review. The risk check now looks only at what an answer recommends, so describing a past repair or shutdown, mentioning an HCA, or reporting "no injuries" no longer holds it. Recommending a repair, shutdown or pressure reduction still does, and so does any harm to people.
 - An answer with a section titled "Injuries and Fatalities" was held as high risk even when it reported none. Headings and bold labels no longer count as a mention of harm, and a table cell of 0 counts as none.
 - Answers ending with the standard note that "any operational, repair, or procedural recommendations should be reviewed by a qualified engineer" were held as high risk, because the note names repair. Such general notes no longer count as a recommendation; specific advice next to one is still held.

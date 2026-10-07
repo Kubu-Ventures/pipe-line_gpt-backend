@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     llm_model: str = "claude-sonnet-4-6"
     # spaCy model Presidio uses for PII detection (bundled in the Docker image).
     pii_spacy_model: str = "en_core_web_sm"
+    # Load the embedder, PII engine and reranker at API startup instead of on the first query.
+    warm_models_on_startup: bool = True
 
     max_tokens_per_day: int = 100_000
     upload_max_bytes: int = 52_428_800  # 50 MB
