@@ -30,6 +30,7 @@ from app.services.llm import (
     estimate_confidence,
     expand_query,
     extract_citations,
+    remove_em_dashes,
     stream_answer,
     user_facing_llm_error,
 )
@@ -301,7 +302,7 @@ async def query_endpoint(
                 if item is None:
                     yield ": ping\n\n"
                 else:
-                    full_answer = item
+                    full_answer = remove_em_dashes(item)
 
             confidence = estimate_confidence(full_answer, reranked)
             citations = [c.model_dump() for c in extract_citations(full_answer, reranked)]
