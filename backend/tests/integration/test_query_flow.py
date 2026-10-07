@@ -51,6 +51,7 @@ def fake_llm(monkeypatch):
     class FakeLLM:
         answer = "There were 3 incidents on SEG-TX-4B [SRC-001]."
         fail = False
+        recommends_action = False  # verdict of the model's recommendation check
 
     async def embed_single(_text):
         return UNIT_VEC
@@ -69,10 +70,14 @@ def fake_llm(monkeypatch):
         if usage is not None:
             usage.update(input_tokens=100, output_tokens=20)
 
+    async def check_recommends_action(_q, _answer, usage=None):
+        return FakeLLM.recommends_action
+
     monkeypatch.setattr("app.routers.query.embed_single", embed_single)
     monkeypatch.setattr("app.routers.query.embed_texts", embed_texts)
     monkeypatch.setattr("app.routers.query.expand_query", expand_query)
     monkeypatch.setattr("app.routers.query.stream_answer", stream_answer)
+    monkeypatch.setattr("app.routers.query.check_recommends_action", check_recommends_action)
     monkeypatch.setattr("app.routers.query.rerank_chunks", lambda _q, chunks, top_k=None: chunks[:top_k])
     return FakeLLM
 
@@ -308,3 +313,31 @@ async def test_review_decision_logged_with_past_tense_event(client, make_user, s
     await client.post(f"/review/{query_id}", json={"decision": "APPROVE"}, headers=auth_headers(engineer))
     types = (await db_session.execute(select(AuditEvent.event_type))).scalars().all()
     assert "HITL_APPROVED" in types
+
+
+async def test_incident_account_with_an_injury_is_delivered(client, make_user, seeded_chunk, fake_llm):
+    """The first demo question: a factual account of a past rupture, including a minor injury."""
+    fake_llm.answer = (
+        "The line was isolated at 12:47 PM and the fire was out by 4:00 PM [SRC-001].\n"
+        "One contractor employee was injured with a minor cut and treated on site [SRC-001]."
+    )
+    operator = await make_user("OPERATOR")
+    events = await ask(client, operator, question="How did the operator respond to the Line XC rupture?")
+    assert events[-1]["hitl_required"] is False
+    assert "minor cut" in "".join(e["delta"] for e in events)
+
+
+async def test_advice_caught_by_model_check_is_held(client, make_user, seeded_chunk, fake_llm):
+    fake_llm.answer = "Running the segment at 80% of MAOP would be the cautious choice [SRC-001]."
+    fake_llm.recommends_action = True
+    operator = await make_user("OPERATOR")
+    events = await ask(client, operator)
+    assert events[-1]["hitl_required"] is True
+    assert "80% of MAOP" not in "".join(e["delta"] for e in events)
+
+
+async def test_question_asking_for_advice_is_held(client, make_user, seeded_chunk, fake_llm):
+    fake_llm.answer = "Line XC operated at 458 psig against an MAOP of 690 psig [SRC-001]."
+    operator = await make_user("OPERATOR")
+    events = await ask(client, operator, question="Should we reduce operating pressure on Line XC?")
+    assert events[-1]["hitl_required"] is True

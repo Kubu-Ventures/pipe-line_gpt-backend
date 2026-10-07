@@ -17,12 +17,6 @@ HIGH_RISK_VERBS = re.compile(
     re.IGNORECASE,
 )
 
-# Harm to people: HIGH risk anywhere in the answer unless negated ("no fatalities", "Injuries: 0")
-FATALITY_PATTERN = re.compile(
-    r"\b(fatal|fatality|fatalities|death|deaths|died|killed|injur\w*|casualt\w*)\b",
-    re.IGNORECASE,
-)
-
 # Keywords that make a recommendation MEDIUM risk
 MEDIUM_RISK_KEYWORDS = re.compile(
     r"\b(maintenance|schedule\s+inspection|hca|high\s+consequence\s+area|"
@@ -52,12 +46,15 @@ DEFERRAL = re.compile(
     re.IGNORECASE,
 )
 
+# Questions that ask for advice get an engineer's review whatever the answer says
+ADVICE_REQUEST = re.compile(
+    r"\b(?:should|recommend\w*|advis\w*|advice|what\s+(?:action|actions|steps)|what\s+(?:do|must)\s+we|"
+    r"is\s+it\s+safe|safe\s+to)\b",
+    re.IGNORECASE,
+)
+
 _CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+")
 _LEADING_MARKUP_RE = re.compile(r"^[\s>*_+-]*(?:\d+[.)]\s*)?[\s*_]*")
-_NEGATION_BEFORE_RE = re.compile(r"\b(?:no|zero|0|without|nor)\s+(?:[\w*-]+\s+){0,3}$", re.IGNORECASE)
-_ZERO_COUNT_AFTER_RE = re.compile(r"^[\s*_]*[:=|][\s*_]*(?:0|none|no)\b", re.IGNORECASE)
-# A heading or a bold label on its own line ("### Injuries and Fatalities", "**Fatalities:**") names a topic
-_LABEL_LINE_RE = re.compile(r"^\s*(?:#.*|[*_]{2}[^*_]+[*_]{2}\s*:?)\s*$")
 
 
 def _recommendation_clauses(answer: str) -> list[str]:
@@ -78,29 +75,18 @@ def _recommendation_clauses(answer: str) -> list[str]:
     return clauses
 
 
-def _mentions_harm(answer: str) -> bool:
-    for line in answer.splitlines():
-        if _LABEL_LINE_RE.match(line):
-            continue
-        for match in FATALITY_PATTERN.finditer(line):
-            before = line[max(0, match.start() - 40) : match.start()]
-            after = line[match.end() : match.end() + 15]
-            if not (_NEGATION_BEFORE_RE.search(before) or _ZERO_COUNT_AFTER_RE.match(after)):
-                return True
-    return False
-
-
-def classify_risk(answer: str, confidence: float) -> tuple[str, bool]:
+def classify_risk(question: str, answer: str, confidence: float, recommends_action: bool) -> tuple[str, bool]:
     """
     Returns (risk_level, hitl_required).
     risk_level: HIGH | MEDIUM | LOW
 
-    Action keywords count only in clauses that recommend something, so an answer that
-    describes a past repair or shutdown is not held for it. Any non-negated mention of
-    deaths or injuries is HIGH regardless.
+    HIGH when the answer recommends an action, by the model's check (`recommends_action`)
+    or by a recommending clause naming a high-risk action, or when the question asks for
+    advice. Action keywords count only in clauses that recommend something, so an answer
+    that describes a past repair, shutdown, injury or death is not held for it.
     """
     recommendations = _recommendation_clauses(answer)
-    if any(HIGH_RISK_VERBS.search(c) for c in recommendations) or _mentions_harm(answer):
+    if recommends_action or any(HIGH_RISK_VERBS.search(c) for c in recommendations) or ADVICE_REQUEST.search(question):
         return "HIGH", True
 
     if any(MEDIUM_RISK_KEYWORDS.search(c) for c in recommendations) or confidence < settings.hitl_confidence_threshold:

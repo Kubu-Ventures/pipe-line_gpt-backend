@@ -6,6 +6,12 @@ import pytest
 
 from app.services.hitl import classify_risk
 
+FACT_QUESTION = "What happened in the June 2024 rupture on Line XC?"
+
+
+def risk(answer: str, confidence: float = 1.0, question: str = FACT_QUESTION, recommends_action: bool = False):
+    return classify_risk(question, answer, confidence, recommends_action)
+
 
 @pytest.mark.parametrize(
     "answer,confidence,expected_risk,expected_hitl",
@@ -15,8 +21,8 @@ from app.services.hitl import classify_risk
         ("Recommend to shut in the pipeline pending inspection.", 0.9, "HIGH", True),
         ("Consider pressure reduction on the affected segment.", 0.9, "HIGH", True),
         ("Evacuate the area around milepost 34.", 0.9, "HIGH", True),
-        # HIGH risk — fatality reference
-        ("This incident resulted in 2 fatalities and 5 injuries.", 0.9, "HIGH", True),
+        # LOW risk — reported harm to people is a fact, not advice
+        ("This incident resulted in 2 fatalities and 5 injuries.", 0.9, "LOW", False),
         # MEDIUM risk — low confidence
         ("The incident rate in Texas has been stable.", 0.6, "MEDIUM", True),
         # MEDIUM risk — HCA in a recommendation; a factual HCA mention is LOW
@@ -28,7 +34,7 @@ from app.services.hitl import classify_risk
     ],
 )
 def test_classify_risk(answer, confidence, expected_risk, expected_hitl):
-    risk_level, hitl_required = classify_risk(answer, confidence)
+    risk_level, hitl_required = risk(answer, confidence)
     assert risk_level == expected_risk
     assert hitl_required == expected_hitl
 
@@ -45,7 +51,7 @@ def test_classify_risk(answer, confidence, expected_risk, expected_hitl):
     ],
 )
 def test_recommended_actions_are_high_risk(answer):
-    assert classify_risk(answer, 1.0) == ("HIGH", True)
+    assert risk(answer) == ("HIGH", True)
 
 
 def test_described_past_actions_are_not_held():
@@ -58,7 +64,7 @@ def test_described_past_actions_are_not_held():
         "- Repair was completed before return to service [SRC-001]\n"
         "- **Shutdown:** yes [SRC-001]"
     )
-    assert classify_risk(answer, 1.0) == ("LOW", False)
+    assert risk(answer) == ("LOW", False)
 
 
 @pytest.mark.parametrize(
@@ -74,7 +80,7 @@ def test_described_past_actions_are_not_held():
     ],
 )
 def test_generic_engineer_review_disclaimer_is_not_a_recommendation(answer):
-    assert classify_risk(answer, 1.0) == ("LOW", False)
+    assert risk(answer) == ("LOW", False)
 
 
 def test_specific_advice_next_to_a_disclaimer_is_still_held():
@@ -82,7 +88,7 @@ def test_specific_advice_next_to_a_disclaimer_is_still_held():
         "We recommend reducing operating pressure to 600 psig [SRC-001]. "
         "Any such actions should be reviewed by a qualified pipeline integrity engineer."
     )
-    assert classify_risk(answer, 1.0) == ("HIGH", True)
+    assert risk(answer) == ("HIGH", True)
 
 
 @pytest.mark.parametrize(
@@ -91,39 +97,47 @@ def test_specific_advice_next_to_a_disclaimer_is_still_held():
         "One contractor was injured [SRC-001].",
         "The rupture caused 2 fatalities [SRC-001].",
         "There were casualties at the site [SRC-001].",
+        "No fatalities occurred and no injuries required inpatient hospitalisation [SRC-001].",
+        "Fatalities: 0. Injuries: 0. [SRC-001]",
+        "### Injuries and Fatalities\nOne worker was injured and hospitalized [SRC-001].",
+        # The first demo question (Line XC, June 2024): the record reports one minor injury.
+        "- No injuries requiring inpatient hospitalization or deaths. One contractor employee received "
+        "treatment on site for a minor cut [SRC-001].",
+        "- **Casualties:** No fatalities. One contractor employee was injured with a minor cut and "
+        "treated on site [SRC-001].",
+        "- One residence about 900 feet away was evacuated as a precaution until the fire was extinguished [SRC-001].",
     ],
 )
-def test_harm_to_people_is_high_risk(answer):
-    assert classify_risk(answer, 1.0) == ("HIGH", True)
+def test_reported_harm_to_people_is_not_held(answer):
+    """Casualties are facts about what happened; only advice goes to an engineer."""
+    assert risk(answer) == ("LOW", False)
+
+
+def test_model_check_holds_advice_the_patterns_miss():
+    answer = "Running Line XC at 80% of MAOP would be the cautious choice [SRC-001]."
+    assert risk(answer) == ("LOW", False)
+    assert risk(answer, recommends_action=True) == ("HIGH", True)
 
 
 @pytest.mark.parametrize(
-    "answer",
+    "question",
     [
-        "No fatalities occurred and no injuries required inpatient hospitalisation [SRC-001].",
-        "There were no injuries or fatalities [SRC-001].",
-        "Fatalities: 0. Injuries: 0. [SRC-001]",
-        "- **Fatalities:** 0 [SRC-001]",
-        "| Fatalities | 0 |\n| Injuries | 0 |",
-        # From a real held answer: the section heading named the topic, the text negated it.
-        "### Injuries and Fatalities\nThere were no fatalities and no injuries requiring "
-        "inpatient hospitalization [SRC-001].",
-        "**Injuries and Fatalities:**\nThere were no injuries or fatalities [SRC-001].",
+        "Should Southern Star reduce operating pressure on the line where the most recent corrosion incident happened?",
+        "Is it safe to keep operating Line XC at 690 psig?",
+        "What actions do you recommend for the Noble County segment?",
     ],
 )
-def test_negated_harm_is_not_held(answer):
-    assert classify_risk(answer, 1.0) == ("LOW", False)
-
-
-def test_harm_under_a_heading_is_still_held():
-    answer = "### Injuries and Fatalities\nOne worker was injured and hospitalized [SRC-001]."
-    assert classify_risk(answer, 1.0) == ("HIGH", True)
+def test_question_asking_for_advice_is_held(question):
+    assert risk("Line XC operated at 458 psig against an MAOP of 690 psig [SRC-001].", question=question) == (
+        "HIGH",
+        True,
+    )
 
 
 def test_medium_keywords_only_count_in_recommendations():
-    assert classify_risk("The leak was in a Class 3, HCA location [SRC-003].", 1.0) == ("LOW", False)
-    assert classify_risk("The operator should schedule inspection of the HCA segment.", 1.0) == ("MEDIUM", True)
+    assert risk("The leak was in a Class 3, HCA location [SRC-003].") == ("LOW", False)
+    assert risk("The operator should schedule inspection of the HCA segment.") == ("MEDIUM", True)
 
 
 def test_low_confidence_is_medium_risk():
-    assert classify_risk("The cause was external corrosion [SRC-001].", 0.5) == ("MEDIUM", True)
+    assert risk("The cause was external corrosion [SRC-001].", 0.5) == ("MEDIUM", True)
