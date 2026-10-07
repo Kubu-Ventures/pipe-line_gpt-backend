@@ -21,6 +21,8 @@ All notable changes to PipelineGPT are documented here. The format follows
 
 ### Fixed
 - Factual answers were held for engineer review. The risk check now looks only at what an answer recommends, so describing a past repair or shutdown, mentioning an HCA, or reporting "no injuries" no longer holds it. Recommending a repair, shutdown or pressure reduction still does, and so does any harm to people.
+- An answer with a section titled "Injuries and Fatalities" was held as high risk even when it reported none. Headings and bold labels no longer count as a mention of harm, and a table cell of 0 counts as none.
+- Some answers cited the document by name ("[Southern Star PHMSA incidents]") instead of its source id, so their citations weren't linked and their confidence scored 0. The prompt now gives the exact format ([SRC-001]) and rules out citing by name.
 - Well-cited answers got low confidence scores, which sent them to review. The score counted cited sources against every retrieved chunk, so citing only the relevant ones looked weak. It now measures how many of the answer's figures are backed by a retrieved source.
 - Without the cross-encoder, results from the question's rephrasings were ranked by raw similarity, which let generic chunks push out the record the question named. Results are now merged by reciprocal rank fusion.
 - Questions filtered by pipeline segment found nothing in uploaded documents: no upload path ever set a document's segment, so the filter had nothing to match. `POST /ingest` now takes optional `segment_id` and `commodity` fields (trimmed, up to 100 characters, matched exactly by the query filters). A commodity entered at upload is no longer replaced by the one read from a PHMSA file.

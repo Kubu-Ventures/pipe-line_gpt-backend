@@ -89,10 +89,20 @@ def test_harm_to_people_is_high_risk(answer):
         "There were no injuries or fatalities [SRC-001].",
         "Fatalities: 0. Injuries: 0. [SRC-001]",
         "- **Fatalities:** 0 [SRC-001]",
+        "| Fatalities | 0 |\n| Injuries | 0 |",
+        # From a real held answer: the section heading named the topic, the text negated it.
+        "### Injuries and Fatalities\nThere were no fatalities and no injuries requiring "
+        "inpatient hospitalization [SRC-001].",
+        "**Injuries and Fatalities:**\nThere were no injuries or fatalities [SRC-001].",
     ],
 )
 def test_negated_harm_is_not_held(answer):
     assert classify_risk(answer, 1.0) == ("LOW", False)
+
+
+def test_harm_under_a_heading_is_still_held():
+    answer = "### Injuries and Fatalities\nOne worker was injured and hospitalized [SRC-001]."
+    assert classify_risk(answer, 1.0) == ("HIGH", True)
 
 
 def test_medium_keywords_only_count_in_recommendations():

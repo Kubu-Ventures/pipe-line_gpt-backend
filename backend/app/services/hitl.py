@@ -50,7 +50,9 @@ DEFERRAL = re.compile(r"\bdecisions?\b.*\bshould\s+be\s+(?:reviewed|approved|mad
 _CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+")
 _LEADING_MARKUP_RE = re.compile(r"^[\s>*_+-]*(?:\d+[.)]\s*)?[\s*_]*")
 _NEGATION_BEFORE_RE = re.compile(r"\b(?:no|zero|0|without|nor)\s+(?:[\w*-]+\s+){0,3}$", re.IGNORECASE)
-_ZERO_COUNT_AFTER_RE = re.compile(r"^[\s*_]*[:=][\s*_]*(?:0|none|no)\b", re.IGNORECASE)
+_ZERO_COUNT_AFTER_RE = re.compile(r"^[\s*_]*[:=|][\s*_]*(?:0|none|no)\b", re.IGNORECASE)
+# A heading or a bold label on its own line ("### Injuries and Fatalities", "**Fatalities:**") names a topic
+_LABEL_LINE_RE = re.compile(r"^\s*(?:#.*|[*_]{2}[^*_]+[*_]{2}\s*:?)\s*$")
 
 
 def _recommendation_clauses(answer: str) -> list[str]:
@@ -72,11 +74,14 @@ def _recommendation_clauses(answer: str) -> list[str]:
 
 
 def _mentions_harm(answer: str) -> bool:
-    for match in FATALITY_PATTERN.finditer(answer):
-        before = answer[max(0, match.start() - 40) : match.start()]
-        after = answer[match.end() : match.end() + 15]
-        if not (_NEGATION_BEFORE_RE.search(before) or _ZERO_COUNT_AFTER_RE.match(after)):
-            return True
+    for line in answer.splitlines():
+        if _LABEL_LINE_RE.match(line):
+            continue
+        for match in FATALITY_PATTERN.finditer(line):
+            before = line[max(0, match.start() - 40) : match.start()]
+            after = line[match.end() : match.end() + 15]
+            if not (_NEGATION_BEFORE_RE.search(before) or _ZERO_COUNT_AFTER_RE.match(after)):
+                return True
     return False
 
 
