@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from app.ingest.chunker import chunk_text
@@ -23,6 +24,39 @@ PHMSA_FIELD_MAP = {
     "PIPELINE_TYPE": "pipeline_type",
     "PIPELINE_SYSTEM": "pipeline_system",
 }
+
+
+def _incident_date(local_datetime: str) -> str:
+    """'6/22/2024 10:27' → '22 Jun 2024'; anything else is returned as recorded."""
+    value = local_datetime.strip()
+    for fmt in ("%m/%d/%Y %H:%M", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+        return f"{parsed.day} {parsed:%b %Y}"
+    return value
+
+
+def _incident_label(row: dict) -> str:
+    """
+    A label that tells one incident from another, e.g.
+    "22 Jun 2024 · Pawnee County, OK · Excavation damage · Report 20240093".
+    Every chunk of the incident carries it, including narrative continuations.
+    """
+    date = _incident_date(row.get("LOCAL_DATETIME") or "") or (row.get("IYEAR") or "").strip()
+    city = (row.get("LOCATION_CITY") or "").strip()
+    county = (row.get("ONSHORE_COUNTY_NAME") or row.get("OFFSHORE_COUNTY_NAME") or "").strip()
+    if city and "MUNICIPALITY" not in city.upper():
+        place = city.title()
+    elif county:
+        place = county.title() if county.upper().endswith(("COUNTY", "PARISH")) else f"{county.title()} County"
+    else:
+        place = ""
+    place = ", ".join(filter(None, [place, (row.get("LOCATION_STATE") or "").strip().upper()]))
+    cause = (row.get("CAUSE") or "").strip().capitalize()
+    report = (row.get("REPORT_NUMBER") or "").strip()
+    return " · ".join(filter(None, [date, place, cause, f"Report {report}" if report else ""])) or "Incident"
 
 
 def _row_to_text(row: dict) -> str:
@@ -92,7 +126,9 @@ def load_phmsa_tsv(content: bytes, filename: str) -> tuple[list[dict], dict]:
         injure = row.get("INJURE", "0")
 
         has_fatality = str(fatal).strip() not in ("", "0") or str(injure).strip() not in ("", "0")
-        section = "Fatality/Injury Incident" if has_fatality else row.get("CAUSE", "Incident")
+        section = _incident_label(row)
+        if has_fatality:
+            section += " · Fatality or injury"
 
         chunks = chunk_text(text, section_label=section)
         for chunk in chunks:

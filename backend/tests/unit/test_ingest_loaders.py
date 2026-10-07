@@ -59,6 +59,26 @@ def test_phmsa_tsv_loader():
     assert len(fatality_chunks) >= 1
 
 
+def test_phmsa_chunks_are_labelled_by_incident():
+    tsv_content = (
+        b"IYEAR\tREPORT_NUMBER\tLOCAL_DATETIME\tCAUSE\tFATAL\tINJURE\tLOCATION_CITY\tONSHORE_COUNTY_NAME\t"
+        b"LOCATION_STATE\tNARRATIVE\n"
+    )
+    tsv_content += (
+        b"2024\t20240093\t6/22/2024 10:27\tEXCAVATION DAMAGE\t0\t0\tNot Within a Municipality\tPAWNEE\tOK\t"
+        + b"WORD " * 600
+        + b"\n"
+    )
+    tsv_content += b"2014\t20140094\t8/12/2014 9:05\tCORROSION FAILURE\t0\t1\tMERRIAM\tJOHNSON\tKS\tLEAK\n"
+
+    chunks, _ = load_phmsa_tsv(tsv_content, "incidents.tsv")
+    labels = [c["section_label"] for c in chunks]
+    # The long narrative spans several chunks; each one carries its incident's label
+    assert len(chunks) > 2
+    assert labels[:-1] == ["22 Jun 2024 · Pawnee County, OK · Excavation damage · Report 20240093"] * (len(chunks) - 1)
+    assert labels[-1] == "12 Aug 2014 · Merriam, KS · Corrosion failure · Report 20140094 · Fatality or injury"
+
+
 def test_phmsa_tsv_dedup_hash():
     """Same content should produce the same SHA-256."""
     from app.services.embedder import content_hash
