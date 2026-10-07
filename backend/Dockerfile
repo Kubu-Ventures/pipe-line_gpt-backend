@@ -33,8 +33,11 @@ RUN python -m spacy download en_core_web_sm
 
 ENV FASTEMBED_CACHE_PATH=/opt/models/fastembed \
     HF_HOME=/opt/models/huggingface
+# The runtime user only reads the models. huggingface_hub writes some cache files
+# owner-only, so open them up or the app logs "Permission denied" on every load.
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')" \
-    && python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+    && python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')" \
+    && chmod -R a+rX /opt/models
 
 
 FROM python:${PYTHON_VERSION}-slim AS runtime
@@ -83,7 +86,7 @@ ENV UPLOAD_DIR=/data/uploads
 USER app
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=4)"]
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
