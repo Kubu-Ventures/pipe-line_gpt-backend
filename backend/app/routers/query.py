@@ -33,7 +33,7 @@ from app.services.llm import (
     stream_answer,
     user_facing_llm_error,
 )
-from app.services.retriever import rerank_chunks, retrieve_chunks
+from app.services.retriever import fuse_results, rerank_chunks, retrieve_chunks
 
 router = APIRouter(prefix="/query", tags=["query"])
 logger = logging.getLogger(__name__)
@@ -286,13 +286,11 @@ async def query_endpoint(
                 logger.warning("Query expansion failed; continuing without variants", exc_info=True)
                 variant_embeddings = []
 
-            all_chunks: list[dict] = []
-            seen_ids: set[str] = set()
-            for emb in [query_embedding, *variant_embeddings]:
-                for chunk in await retrieve_chunks(db, emb, request_body.filters, top_k=settings.top_k_retrieval):
-                    if chunk["id"] not in seen_ids:
-                        seen_ids.add(chunk["id"])
-                        all_chunks.append(chunk)
+            result_lists = [
+                await retrieve_chunks(db, emb, request_body.filters, top_k=settings.top_k_retrieval)
+                for emb in [query_embedding, *variant_embeddings]
+            ]
+            all_chunks = fuse_results(result_lists)
 
             reranked = await asyncio.to_thread(rerank_chunks, clean_question, all_chunks, settings.top_k_rerank)
             context_block = build_context_block(reranked)
