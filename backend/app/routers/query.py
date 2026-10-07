@@ -27,6 +27,7 @@ from app.services.embedder import embed_single, embed_texts
 from app.services.hitl import classify_risk, queue_for_review
 from app.services.llm import (
     build_context_block,
+    check_recommends_action,
     estimate_confidence,
     expand_query,
     extract_citations,
@@ -306,7 +307,8 @@ async def query_endpoint(
 
             confidence = estimate_confidence(full_answer, reranked)
             citations = [c.model_dump() for c in extract_citations(full_answer, reranked)]
-            risk_level, hitl_required = classify_risk(full_answer, confidence)
+            recommends_action = await check_recommends_action(clean_question, full_answer, usage)
+            risk_level, hitl_required = classify_risk(clean_question, full_answer, confidence, recommends_action)
 
             db_response = Response(
                 id=uuid.uuid4(),

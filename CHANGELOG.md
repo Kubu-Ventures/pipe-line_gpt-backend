@@ -23,6 +23,7 @@ All notable changes to PipelineGPT are documented here. The format follows
 - The first query on each API worker no longer takes 15 to 30 s longer than the rest. The API now loads the embedder, PII engine and reranker at startup, before it accepts requests (set `WARM_MODELS_ON_STARTUP=false` to skip). Startup takes longer instead, so the image healthcheck now allows 120 s.
 - The image no longer logs "Permission denied" on a fastembed cache file each time a model loads: the baked-in model files are now readable by the non-root runtime user.
 - Factual answers were held for engineer review. The risk check now looks only at what an answer recommends, so describing a past repair or shutdown, mentioning an HCA, or reporting "no injuries" no longer holds it. Recommending a repair, shutdown or pressure reduction still does, and so does any harm to people.
+- Factual incident answers that reported an injury or death were still held for engineer review, for example the June 2024 Line XC rupture, where one contractor was treated on site for a minor cut. Reporting harm to people no longer holds an answer; only advice does.
 - An answer with a section titled "Injuries and Fatalities" was held as high risk even when it reported none. Headings and bold labels no longer count as a mention of harm, and a table cell of 0 counts as none.
 - Answers ending with the standard note that "any operational, repair, or procedural recommendations should be reviewed by a qualified engineer" were held as high risk, because the note names repair. Such general notes no longer count as a recommendation; specific advice next to one is still held.
 - The answer prompt now spells out the citation format ([SRC-001]) and rules out citing a source by its document name.
@@ -41,6 +42,7 @@ All notable changes to PipelineGPT are documented here. The format follows
 - The dashboard's "Re-analyse" (`POST /dashboard/insights/refresh`) now runs in the background in batches of 25 documents and returns at once (202) with progress; `GET` on the same path reports it. It used to call Claude for every document inside one request, which on a large knowledge base would time out and couldn't be followed. Only one refresh runs at a time.
 - Uploaded files now wait for the worker in a shared `uploads` volume instead of inside the Redis queue, so a large backlog no longer fills Redis memory. Uploads queued before upgrading are still processed.
 - Ingestion time limit raised from 30 minutes to 2 hours per document, to fit OCR of long scanned reports. A document that exceeds it is marked failed instead of being retried three more times.
+- Every answer gets a second, short model check for operational advice, which catches advice the keyword rules miss (such as "running at 80% of MAOP would be the cautious choice"). If the check fails or is unclear, the answer is held. Questions that ask for advice ("should we…", "is it safe to…") are always held. This adds one small AI call per answered question, counted toward the daily token budget.
 
 ## [0.2.0] - 2026-09-25
 
