@@ -61,13 +61,28 @@ def test_described_past_actions_are_not_held():
     assert classify_risk(answer, 1.0) == ("LOW", False)
 
 
-def test_generic_engineer_review_disclaimer_is_not_a_recommendation():
-    answer = (
+@pytest.mark.parametrize(
+    "answer",
+    [
         "> Any decisions regarding return-to-service, repair scope, or preventive measures "
         "arising from this incident should be reviewed and approved by a qualified pipeline "
-        "integrity engineer."
-    )
+        "integrity engineer.",
+        # From a real held answer
+        "> ⚠️ **Note:** Any operational, repair, or procedural recommendations arising from this "
+        "incident analysis should be reviewed and validated by a qualified pipeline integrity "
+        "engineer before implementation.",
+    ],
+)
+def test_generic_engineer_review_disclaimer_is_not_a_recommendation(answer):
     assert classify_risk(answer, 1.0) == ("LOW", False)
+
+
+def test_specific_advice_next_to_a_disclaimer_is_still_held():
+    answer = (
+        "We recommend reducing operating pressure to 600 psig [SRC-001]. "
+        "Any such actions should be reviewed by a qualified pipeline integrity engineer."
+    )
+    assert classify_risk(answer, 1.0) == ("HIGH", True)
 
 
 @pytest.mark.parametrize(

@@ -45,7 +45,12 @@ IMPERATIVE_START = re.compile(
 RECOMMENDATION_HEADING = re.compile(r"\b(recommend\w*|next\s+steps|action\s+(?:items|plan))\b", re.IGNORECASE)
 
 # Deferral boilerplate, e.g. "Any decisions regarding repair scope should be reviewed by a qualified engineer"
-DEFERRAL = re.compile(r"\bdecisions?\b.*\bshould\s+be\s+(?:reviewed|approved|made)\b.*\bengineer", re.IGNORECASE)
+# or "Any operational, repair, or procedural recommendations ... should be validated by an engineer"
+DEFERRAL = re.compile(
+    r"\b(?:decisions?|(?:any|all)\s+(?:[\w,/-]+\s+){0,6}?(?:recommendations?|actions?|measures?))\b"
+    r".*\bshould\s+be\s+(?:reviewed|approved|made|validated)\b.*\bengineer",
+    re.IGNORECASE,
+)
 
 _CLAUSE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+")
 _LEADING_MARKUP_RE = re.compile(r"^[\s>*_+-]*(?:\d+[.)]\s*)?[\s*_]*")
